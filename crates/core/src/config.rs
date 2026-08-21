@@ -172,15 +172,34 @@ impl AppConfig {
     }
 
     /// Overlay runtime values from environment variables. Currently this lets
-    /// Soulseek credentials be supplied per-run without editing the config file
-    /// (or committing them):
+    /// Soulseek settings be supplied per-run without editing the config file
+    /// (or committing credentials):
     ///
+    /// - `AGPEER_SOULSEEK_SERVER_ADDR` — Soulseek server address
+    /// - `AGPEER_SOULSEEK_LISTEN_PORT` — local listen port for peer/file connections
     /// - `AGPEER_SOULSEEK_USERNAME`, `AGPEER_SOULSEEK_PASSWORD`
     pub fn apply_env_overrides(&mut self) {
-        if let Ok(username) = std::env::var("AGPEER_SOULSEEK_USERNAME") {
+        self.apply_env_overrides_from(|key| std::env::var(key).ok());
+    }
+
+    /// Same as [`Self::apply_env_overrides`] but reads values from a caller-
+    /// supplied lookup, which keeps the logic testable without mutating the
+    /// process-global environment.
+    pub fn apply_env_overrides_from(&mut self, get: impl Fn(&str) -> Option<String>) {
+        if let Some(addr) = get("AGPEER_SOULSEEK_SERVER_ADDR") {
+            if !addr.trim().is_empty() {
+                self.soulseek.server_addr = addr;
+            }
+        }
+        if let Some(port) = get("AGPEER_SOULSEEK_LISTEN_PORT") {
+            if let Ok(port) = port.parse() {
+                self.soulseek.listen_port = port;
+            }
+        }
+        if let Some(username) = get("AGPEER_SOULSEEK_USERNAME") {
             self.soulseek.username = Some(username);
         }
-        if let Ok(password) = std::env::var("AGPEER_SOULSEEK_PASSWORD") {
+        if let Some(password) = get("AGPEER_SOULSEEK_PASSWORD") {
             self.soulseek.password = Some(password);
         }
     }
@@ -270,5 +289,44 @@ mod tests {
             PathBuf::from("test_data_dir/agpeer.sqlite")
         );
         assert_eq!(config.token_file(), PathBuf::from("test_data_dir/token"));
+    }
+
+    #[test]
+    fn soulseek_env_overrides_apply() {
+        let mut config = AppConfig::default();
+        let overrides = [
+            ("AGPEER_SOULSEEK_SERVER_ADDR", "srv.example:1234"),
+            ("AGPEER_SOULSEEK_LISTEN_PORT", "4321"),
+            ("AGPEER_SOULSEEK_USERNAME", "alice"),
+            ("AGPEER_SOULSEEK_PASSWORD", "pw"),
+        ]
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+        config.apply_env_overrides_from(|key| overrides.get(key).map(|v| v.to_string()));
+
+        assert_eq!(config.soulseek.server_addr, "srv.example:1234");
+        assert_eq!(config.soulseek.listen_port, 4321);
+        assert_eq!(config.soulseek.username.as_deref(), Some("alice"));
+        assert_eq!(config.soulseek.password.as_deref(), Some("pw"));
+    }
+
+    #[test]
+    fn soulseek_env_override_ignores_invalid_port() {
+        let mut config = AppConfig::default();
+        let port = config.soulseek.listen_port;
+        let overrides =
+            std::collections::HashMap::from([("AGPEER_SOULSEEK_LISTEN_PORT", "not-a-port")]);
+        config.apply_env_overrides_from(|key| overrides.get(key).map(|v| v.to_string()));
+        assert_eq!(config.soulseek.listen_port, port);
+    }
+
+    #[test]
+    fn soulseek_env_missing_values_keep_defaults() {
+        let config = AppConfig::default();
+        let default_addr = config.soulseek.server_addr.clone();
+        let mut config = AppConfig::default();
+        config.apply_env_overrides_from(|_| None);
+        assert_eq!(config.soulseek.server_addr, default_addr);
+        assert!(config.soulseek.username.is_none());
     }
 }

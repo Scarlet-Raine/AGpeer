@@ -68,7 +68,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (init?.body) headers.set("Content-Type", "application/json");
-  // Bound every request so a slow/hung backend (e.g. an slskd search fetch)
+  // Bound every request so a slow/hung backend (e.g. a slow soulseek search)
   // can never wedge the UI on a loader forever, and honor a caller-supplied
   // abort signal (so a new search/stop can cancel an in-flight results fetch).
   const controller = new AbortController();

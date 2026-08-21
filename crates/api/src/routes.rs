@@ -419,7 +419,7 @@ pub async fn search_results(
         .map_err(err_to_response)?
         .ok_or_else(|| err_to_response(Error::SearchNotFound))?;
 
-    // Results live in the backend (the slskd adapter accumulates them in
+    // Results live in the backend (the soulseek adapter accumulates them in
     // memory). Prefer the live backend; fall back to whatever is persisted if
     // the backend is no longer available. Results are capped by the backend to
     // `max_results`, and DB persistence is intentionally skipped here so a

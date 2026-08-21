@@ -120,8 +120,8 @@ architecture and licensing constraint:
 - Bind core to loopback by default. LAN exposure and firewall changes require
   explicit user configuration; authentication remains required.
 - Never commit or log credentials, tokens, cookies, keys, auth headers, runtime
-  databases, logs, downloaded content, or sidecar state.
-- Treat `run/`, downloaded payloads, and sidecar runtime directories as private
+  databases, logs, or downloaded content.
+- Treat `run/`, downloaded payloads, and backend runtime directories as private
   data. Inspect them only for an explicit runtime-diagnosis task, and redact
   secrets and personal filenames from output.
 - Canonicalize user paths, enforce configured roots, reject `..` traversal, and
@@ -180,7 +180,7 @@ search and normal build/test commands.
   available; otherwise use official upstream docs. Do not guess unstable APIs.
 
 Use `rg`/`rg --files` for discovery. Exclude `target`, `node_modules`, `dist`,
-`sidecars/slskd`, and `run` unless explicitly in scope.
+and `run` unless explicitly in scope.
 
 ## Validation matrix
 
@@ -262,8 +262,10 @@ A change is done when all applicable statements are true:
 
 ## Out of scope for v1
 
-Do not spend time on torrent discovery/index providers, site scraping, a custom
-Soulseek protocol, DRM circumvention, crack/keygen or binary patching workflows,
-unrestricted agent shell access, multi-node orchestration, transcoding, a
-custom media player, browser extensions, or mobile apps. Prioritize reliable
-transfers, search, API behavior, post-processing, recovery, security, and UX.
+Do not spend time on torrent discovery/index providers, site scraping, DRM
+circumvention, crack/keygen or binary patching workflows, unrestricted agent
+shell access, multi-node orchestration, transcoding, a custom media player,
+browser extensions, or mobile apps. The Soulseek wire protocol itself is owned
+by `rustsoseek`; grow it there, in its own repository, and pull it in as a
+tagged dependency. Prioritize reliable transfers, search, API behavior,
+post-processing, recovery, security, and UX.
