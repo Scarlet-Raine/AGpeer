@@ -84,7 +84,7 @@ their `Cargo.toml` metadata and resolved via `Cargo.lock`.
 
 - **Purpose:** native Soulseek wire-protocol client (login, search, download,
   distributed search). Embedded behind the shared backend traits.
-- **License:** MIT OR Apache-2.0.
+- **License:** Apache-2.0.
 - **Source:** https://github.com/Scarlet-Raine/RustSoSeek
 
 `rustsoseek` is a clean-room implementation written from the public Soulseek

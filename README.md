@@ -1,6 +1,9 @@
 # agpeer
 
-A polished, automation-first P2P download manager for humans and software agents.
+**A local-first, automation-first P2P download manager for humans and software agents.**
+
+![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)
+![Rust](https://img.shields.io/badge/Rust-1.80+-orange.svg)
 
 agpeer is a general-purpose transfer and post-processing client. It handles
 user-supplied BitTorrent magnets / `.torrent` files and Soulseek
@@ -190,7 +193,7 @@ See [docs/security.md](docs/security.md) for the full model.
 
 ## License
 
-Dual-licensed under [MIT OR Apache-2.0](LICENSE). See
+Licensed under [Apache-2.0](LICENSE). See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the full third-party
 licensing record. The Soulseek wire-protocol client is `rustsoseek`
-([MIT OR Apache-2.0](https://github.com/Scarlet-Raine/RustSoSeek)).
+([Apache-2.0](https://github.com/Scarlet-Raine/RustSoSeek)).

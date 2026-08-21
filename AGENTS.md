@@ -89,8 +89,8 @@ bypass the API/core to implement separate business logic.
 
 `rustsoseek` is a clean-room implementation of the Soulseek wire protocol,
 written from the public protocol documentation only (`SLSKPROTOCOL.md`, Museek+
-wiki). It is MIT OR Apache-2.0 and is maintained in its own repository. This is
-an architecture and licensing constraint:
+wiki). It is Apache-2.0 and is maintained in its own repository. This is an
+architecture and licensing constraint:
 
 - Do not copy `slskd`, `Soulseek.NET`, `aioslsk`, or `Nicotine+` source into
   agpeer or rustsoseek.

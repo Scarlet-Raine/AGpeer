@@ -2,9 +2,9 @@
 name = "agpeer"
 version = "0.1.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 rust-version = "1.80"
-repository = "https://github.com/agpeer/agpeer"
+repository = "https://github.com/Scarlet-Raine/AGpeer"
 description = "agpeer core service binary (serve + migrate)."
 
 [[bin]]
@@ -37,9 +37,9 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 rust-version = "1.80"
-repository = "https://github.com/agpeer/agpeer"
+repository = "https://github.com/Scarlet-Raine/AGpeer"
 
 [workspace.dependencies]
 # serialization / time / ids
@@ -89,7 +89,7 @@ agpeer-soulseek = { path = "crates/soulseek" }
 agpeer-hook = { path = "crates/hook" }
 agpeer-jobs = { path = "crates/jobs" }
 agpeer-postprocess = { path = "crates/postprocess" }
-rustsoseek = { git = "https://github.com/Scarlet-Raine/RustSoSeek", tag = "v0.1.0" }
+rustsoseek = { git = "https://github.com/Scarlet-Raine/RustSoSeek", tag = "v0.1.1" }
 
 [dependencies]
 agpeer-common.workspace = true
