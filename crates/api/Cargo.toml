@@ -1,0 +1,29 @@
+[package]
+name = "agpeer-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Axum HTTP API, SSE events, auth, and OpenAPI."
+
+[dependencies]
+agpeer-common.workspace = true
+agpeer-storage.workspace = true
+agpeer-core.workspace = true
+agpeer-jobs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+axum.workspace = true
+futures.workspace = true
+utoipa.workspace = true
+utoipa-swagger-ui.workspace = true
+
+[dev-dependencies]
+sqlx.workspace = true

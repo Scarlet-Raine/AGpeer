@@ -1,0 +1,27 @@
+[package]
+name = "agpeer-debug-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MCP server for fast, low-token debugging: log tailing/search, code search/inspection, git summaries."
+# rmcp (and its macros) require Rust 1.88.
+rust-version = "1.88"
+
+[[bin]]
+name = "agpeer-debug-mcp"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "3.1", default-features = false, features = [
+    "server",
+    "macros",
+    "transport-io",
+] }
+clap.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+regex = "1"
+schemars = "1"

@@ -1,0 +1,20 @@
+[package]
+name = "agpeer-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "SQLite persistence layer and migrations."
+
+[dependencies]
+agpeer-common.workspace = true
+agpeer-jobs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+sqlx.workspace = true

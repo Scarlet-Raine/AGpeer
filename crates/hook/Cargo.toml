@@ -1,0 +1,19 @@
+[package]
+name = "agpeer-hook"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "User-configured magnet-search hook backend (SearchBackend only)."
+
+[dependencies]
+agpeer-common.workspace = true
+agpeer-storage.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

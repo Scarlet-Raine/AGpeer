@@ -1,0 +1,21 @@
+[package]
+name = "agpeer-desktop"
+version = "0.1.0"
+description = "agpeer desktop shell"
+edition = "2021"
+
+# Standalone project: not part of the root agpeer workspace.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+
+[lib]
+name = "agpeer_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]

@@ -1,0 +1,30 @@
+[package]
+name = "agpeer-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Application state, config, secrets, and event bus."
+
+[dependencies]
+agpeer-common.workspace = true
+agpeer-storage.workspace = true
+agpeer-jobs.workspace = true
+agpeer-postprocess.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+directories.workspace = true
+keyring.workspace = true
+
+[dev-dependencies]
+sqlx.workspace = true

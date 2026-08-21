@@ -1,0 +1,31 @@
+[package]
+name = "agpeer-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MCP server bridging coding agents to the agpeer REST API (stdio)."
+# rmcp (and its macros) require Rust 1.88; the rest of the workspace targets 1.80.
+rust-version = "1.88"
+
+[[bin]]
+name = "agpeer-mcp"
+path = "src/main.rs"
+
+[dependencies]
+reqwest.workspace = true
+tokio.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+rmcp = { version = "3.1", default-features = false, features = [
+    "server",
+    "macros",
+    "transport-io",
+] }
+schemars = "1"
+
+[dev-dependencies]
+httpmock = "0.8"

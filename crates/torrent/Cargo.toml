@@ -1,0 +1,34 @@
+[package]
+name = "agpeer-torrent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "BitTorrent transfer backend (librqbit)."
+
+[features]
+default = []
+# Real librqbit integration. Off by default so the default build/tests/clippy
+# do not depend on librqbit 8.x (which uses edition 2024 and requires
+# Rust >= 1.85). Verified to compile and pass clippy with --all-features;
+# see SPIKE.md for the engine mapping.
+rqbit = ["dep:librqbit"]
+
+[dependencies]
+agpeer-common.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+# Optional real engine (feature "rqbit"). Apache-2.0.
+librqbit = { version = "8.1", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }

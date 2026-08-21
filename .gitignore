@@ -1,0 +1,55 @@
+# Rust
+/target
+src-tauri/target/
+
+# Frontend (apps/desktop)
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Databases and runtime data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+token
+*.pem
+*.key
+
+# Application data (downloaded content, data dirs, temporary extraction)
+data/
+downloads/
+.tmp/
+tmp-extract/
+
+# slskd sidecar runtime (config, database, logs) and bundled binaries
+sidecars/runtime/
+sidecars/bin/
+sidecars/slskd/
+slskd.db*
+*.log
+logs/
+
+# Local runtime environment (contains Soulseek credentials + downloads)
+/run/
+
+# Local tooling / not part of the product
+kilo.json
+.mcp.json
+.codex/
+.cursor/
+__pycache__/
+*.pyc
+
+# Planning/scraper files kept out of the public repo
+fresh-workspace/
+plan-one-binary.md
+magnets.py
