@@ -1,7 +1,18 @@
-# agpeer Docker Compose example (one-binary container).
+# agpeer Docker Compose example (one-binary container), Unraid layout.
 #
-# Copy this to docker-compose.yml, fill in Soulseek credentials, and run:
-#   docker compose up -d
+# Uses absolute /mnt/user/appdata paths so it works from any location —
+# including the Compose Manager plugin, whose project dir lives on the flash
+# drive (/boot). Relative ./ paths would silently land there, which is both
+# permission-broken and the wrong place for a media library.
+#
+# One-time setup on Unraid:
+#   mkdir -p /mnt/user/appdata/agpeer/downloads
+#   mkdir -p /mnt/user/appdata/agpeer/library
+#   cp deploy/config.example.toml /mnt/user/appdata/agpeer/config.toml
+#   # fill in Soulseek credentials, then:
+#   chmod 644 /mnt/user/appdata/agpeer/config.toml
+#   chown -R 65534:65534 /mnt/user/appdata/agpeer/downloads /mnt/user/appdata/agpeer/library
+#
 # The WebUI + API are served from http://<host>:41000.
 
 services:
@@ -36,24 +47,23 @@ services:
       # AGPEER_SOULSEEK_SERVER_ADDR: vps.slsknet.org:2242
     command: serve
     volumes:
-      # The container runs as UID 65534 (nobody). Every mounted path —
-      # including this config file — must be readable/writable by that UID,
-      # e.g. `chmod 644 config.toml` and `chown -R 65534:65534 <host dirs>`.
-      # Typical Unraid appdata files are root-owned; world-readable (644) is
-      # sufficient for the config.
-      - ./config.toml:/etc/agpeer.toml:ro
-      # Named volumes get correct ownership automatically. If you swap any of
-      # these for host paths (e.g. /mnt/user/appdata/agpeer/...), make them
-      # writable by UID 65534 (nobody): `chown -R 65534:65534 <path>`.
+      # The container runs as UID 65534 (nobody). Every mounted path must be
+      # accessible to that UID: the config needs to be readable (644), the
+      # downloads/library dirs writable (chown 65534:65534).
+      - /mnt/user/appdata/agpeer/config.toml:/etc/agpeer.toml:ro
+      # Private app state (SQLite DB, API token, logs). A named volume gets
+      # correct ownership automatically — keep this one named.
       - agpeer_data:/data
-      # Match the paths in deploy/config.example.toml (the image owns these
-      # directories and runs as an unprivileged user).
-      - ./downloads:/opt/agpeer/downloads
-      - agpeer_soulseek:/opt/agpeer/soulseek-downloads
-      - ./library:/opt/agpeer/library
+      # Downloads and library must live on the SAME filesystem so completed
+      # items organize via an instant rename instead of a cross-drive copy.
+      # Both under the same appdata share satisfies that.
+      - /mnt/user/appdata/agpeer/downloads:/opt/agpeer/downloads
+      - /mnt/user/appdata/agpeer/library:/opt/agpeer/library
+      # Soulseek downloads stage here before post-processing; a host path so
+      # you can inspect in-flight files from the share.
+      - /mnt/user/appdata/agpeer/soulseek-downloads:/opt/agpeer/soulseek-downloads
     tmpfs:
       - /tmp
 
 volumes:
   agpeer_data:
-  agpeer_soulseek:
