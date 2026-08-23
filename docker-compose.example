@@ -37,6 +37,9 @@ services:
     command: serve
     volumes:
       - ./config.toml:/etc/agpeer.toml:ro
+      # Named volumes get correct ownership automatically. If you swap any of
+      # these for host paths (e.g. /mnt/user/appdata/agpeer/...), make them
+      # writable by UID 65534 (nobody): `chown -R 65534:65534 <path>`.
       - agpeer_data:/data
       # Match the paths in deploy/config.example.toml (the image owns these
       # directories and runs as an unprivileged user).

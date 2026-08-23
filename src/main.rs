@@ -133,19 +133,11 @@ enum Command {
 ///   `<data_dir>/logs/agpeer.log` and rotated files `.1` through `.19` (2,000
 ///   lines per file, 20 files retained). Override the file level with
 ///   `AGPEER_LOG_FILE_FILTER` (e.g. `trace`).
+///
+/// If the log directory is unwritable (e.g. a read-only or root-owned volume),
+/// the process logs a warning to stderr and continues console-only instead of
+/// refusing to start.
 fn init_tracing(log_dir: &Path) {
-    let file_appender =
-        LineRotatingWriter::new(log_dir).expect("failed to initialize rotating agpeer log writer");
-    let (file_writer, file_guard) = tracing_appender::non_blocking(file_appender);
-    let file_filter = EnvFilter::try_from_env("AGPEER_LOG_FILE_FILTER").unwrap_or_else(|_| {
-        // Everything at debug into the file: full visibility for debugging.
-        "debug".into()
-    });
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_writer(file_writer)
-        .with_ansi(false)
-        .with_filter(file_filter);
-
     let console_filter = EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| {
         "info,agpeer=info,librqbit=info,sqlx=warn,h2=warn,hyper_util=warn,reqwest=warn,\
          librqbit_dht=warn"
@@ -153,13 +145,36 @@ fn init_tracing(log_dir: &Path) {
     });
     let console_layer = tracing_subscriber::fmt::layer().with_filter(console_filter);
 
-    tracing_subscriber::registry()
-        .with(console_layer)
-        .with(file_layer)
-        .init();
+    match LineRotatingWriter::new(log_dir) {
+        Ok(file_appender) => {
+            let (file_writer, file_guard) = tracing_appender::non_blocking(file_appender);
+            let file_filter =
+                EnvFilter::try_from_env("AGPEER_LOG_FILE_FILTER").unwrap_or_else(|_| {
+                    // Everything at debug into the file: full visibility for
+                    // debugging.
+                    "debug".into()
+                });
+            let file_layer = tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_ansi(false)
+                .with_filter(file_filter);
 
-    // Keep the non-blocking writer alive for the process lifetime.
-    std::mem::forget(file_guard);
+            tracing_subscriber::registry()
+                .with(console_layer)
+                .with(file_layer)
+                .init();
+
+            // Keep the non-blocking writer alive for the process lifetime.
+            std::mem::forget(file_guard);
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: cannot write agpeer logs under {}: {e}; continuing with console logging only",
+                log_dir.display()
+            );
+            tracing_subscriber::registry().with(console_layer).init();
+        }
+    }
 }
 
 /// Best-effort data directory for logging, resolved from the CLI config before
