@@ -90,14 +90,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # The publish job has no git checkout; point gh at the repo
+          # explicitly.
+          GH_OPTS=(-R "$GITHUB_REPOSITORY")
           (cd staging && sha256sum -- * > SHA256SUMS)
           TAG="${{ github.ref_name }}"
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "$TAG" --notes "agpeer $TAG"
+          if ! gh release view "${GH_OPTS[@]}" "$TAG" >/dev/null 2>&1; then
+            gh release create "${GH_OPTS[@]}" "$TAG" --title "$TAG" --notes "agpeer $TAG"
           fi
           # One uploader runs after both matrix build jobs finish, so no
           # concurrent write races the release.
-          gh release upload "$TAG" staging/* --clobber
+          gh release upload "${GH_OPTS[@]}" "$TAG" staging/* --clobber
 
   docker:
     name: Publish container image
