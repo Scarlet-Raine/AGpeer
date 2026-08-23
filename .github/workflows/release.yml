@@ -12,6 +12,11 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write # create the GitHub release and upload assets
+  packages: write # push the GHCR container image
+  actions: read # download build artifacts from this run
+
 jobs:
   build:
     name: Build ${{ matrix.artifact }}
