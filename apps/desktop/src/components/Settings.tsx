@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { getSettings, putSettings, deleteSetting } from "../api/client";
+import type { SiteTemplate, ExtractStrategy } from "../api/types";
 
 const KiB = 1024;
 
@@ -25,6 +26,16 @@ export default function Settings() {
     ? (settings["hook_search.domains"] as string[])
     : [];
   const [domainInput, setDomainInput] = useState("");
+  const sites: SiteTemplate[] = Array.isArray(settings["hook_search.sites"])
+    ? (settings["hook_search.sites"] as SiteTemplate[])
+    : [];
+  const [siteForm, setSiteForm] = useState<SiteTemplate>({
+    domain: "",
+    search: "",
+    extract: "table",
+    max_pages: null,
+    pattern: null,
+  });
 
   async function onToggleMagnet() {
     setSaving(true);
@@ -77,6 +88,59 @@ export default function Settings() {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function onAddSite(e: FormEvent) {
+    e.preventDefault();
+    const domain = siteForm.domain.trim();
+    const search = siteForm.search.trim();
+    if (!domain || !search) {
+      setError("Enter a site name and a search URL.");
+      return;
+    }
+    if (!search.includes("{query}")) {
+      setError("The search URL must contain a {query} token.");
+      return;
+    }
+    if (siteForm.extract === "regex" && !siteForm.pattern?.trim()) {
+      setError("The regex strategy needs a pattern.");
+      return;
+    }
+    const entry: SiteTemplate = {
+      domain,
+      search,
+      extract: siteForm.extract as ExtractStrategy,
+      max_pages:
+        siteForm.extract === "detail" && siteForm.max_pages ? Number(siteForm.max_pages) : null,
+      pattern: siteForm.extract === "regex" ? siteForm.pattern : null,
+    };
+    // Keyed on `domain` alone so editing an existing site's search URL (or
+    // strategy) replaces it instead of accumulating stale duplicate rows.
+    const merged = [...sites.filter((s) => s.domain !== entry.domain), entry];
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await putSettings({ "hook_search.sites": merged });
+      setSiteForm({ domain: "", search: "", extract: "table", max_pages: null, pattern: null });
+      setNotice(`Site template saved (${merged.length} total).`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function onRemoveSite(index: number) {
+    const merged = sites.filter((_, i) => i !== index);
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    putSettings({ "hook_search.sites": merged })
+      .then(load)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setSaving(false));
   }
 
   const load = useCallback(async () => {
@@ -201,9 +265,9 @@ export default function Settings() {
           </button>
         </div>
         <p className="muted">
-          Enables the magnet-search hook to run queries from the Magnet Search tab and the API.
-          The hook command itself is configured in <code>[hook_search]</code> of your
-          <code> agpeer.toml</code>. Downloads pulled from results use the torrent backend.
+          Enables magnet search (the built-in engine/site-template search, or
+          your configured <code>[hook_search].command</code> override). Downloads
+          pulled from results use the torrent backend.
         </p>
       </div>
 
@@ -230,13 +294,95 @@ export default function Settings() {
         )}
         <form className="form-row" onSubmit={onAddDomains} style={{ marginTop: 12 }}>
           <input
-            placeholder="nyaa.si, 1337x.to, torrent-site.org"
+            placeholder="index-1.example, index-2.example"
             value={domainInput}
             onChange={(e) => setDomainInput(e.target.value)}
             style={{ flex: 1 }}
           />
           <button type="submit" className="btn" disabled={saving || !domainInput.trim()}>
             Add
+          </button>
+        </form>
+      </div>
+
+      <div className="card">
+        <h3>Magnet search sites</h3>
+        <p className="muted">
+          Optional site templates for the built-in search (used when no{" "}
+          <code>[hook_search].command</code> is configured). Each template runs{" "}
+          <code>{`{query}`}</code> against a site URL you control;{" "}
+          <code>table</code> takes direct magnet links, <code>detail</code>{" "}
+          follows the top detail pages for each page's first magnet, and{" "}
+          <code>regex</code> applies your pattern. Nothing site-specific is
+          compiled into the binary.
+        </p>
+        {sites.length === 0 ? (
+          <p className="muted">No site templates configured.</p>
+        ) : (
+          sites.map((s, i) => (
+            <div
+              key={`${s.domain}-${s.search}-${i}`}
+              style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}
+            >
+              <code style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {s.domain} ({s.extract}) — {s.search}
+              </code>
+              <button className="btn danger" onClick={() => onRemoveSite(i)} disabled={saving}>
+                Remove
+              </button>
+            </div>
+          ))
+        )}
+        <form className="form-row" onSubmit={onAddSite} style={{ marginTop: 12 }}>
+          <input
+            placeholder="name (e.g. index)"
+            value={siteForm.domain}
+            onChange={(e) => setSiteForm({ ...siteForm, domain: e.target.value })}
+            style={{ width: 140 }}
+          />
+          <input
+            placeholder="https://site.example/?q={query}"
+            value={siteForm.search}
+            onChange={(e) => setSiteForm({ ...siteForm, search: e.target.value })}
+            style={{ flex: 1 }}
+          />
+          <select
+            value={siteForm.extract}
+            onChange={(e) =>
+              setSiteForm({ ...siteForm, extract: e.target.value as ExtractStrategy })
+            }
+            style={{ width: 110 }}
+          >
+            <option value="table">table</option>
+            <option value="detail">detail</option>
+            <option value="regex">regex</option>
+          </select>
+          {siteForm.extract === "detail" && (
+            <input
+              type="number"
+              min="1"
+              max="10"
+              placeholder="max pages"
+              value={siteForm.max_pages ?? ""}
+              onChange={(e) =>
+                setSiteForm({
+                  ...siteForm,
+                  max_pages: e.target.value ? Number(e.target.value) : null,
+                })
+              }
+              style={{ width: 90 }}
+            />
+          )}
+          {siteForm.extract === "regex" && (
+            <input
+              placeholder="magnet pattern regex"
+              value={siteForm.pattern ?? ""}
+              onChange={(e) => setSiteForm({ ...siteForm, pattern: e.target.value })}
+              style={{ flex: 1 }}
+            />
+          )}
+          <button type="submit" className="btn" disabled={saving}>
+            Add site
           </button>
         </form>
       </div>

@@ -1,0 +1,42 @@
+# agpeer systemd unit (bare-metal Linux; the NSSM/NSSM-equivalent recipe).
+#
+# Install:
+#   sudo cp deploy/systemd/agpeer.service /etc/systemd/system/
+#   sudo mkdir -p /etc/agpeer && sudo cp deploy/config.example.toml /etc/agpeer/agpeer.toml
+#   sudo useradd --system --home /opt/agpeer --shell /usr/sbin/nologin agpeer
+#   # agpeer must be able to create its DB/token/log dirs and download roots:
+#   sudo install -d -o agpeer -g agpeer /var/lib/agpeer /opt/agpeer \
+#     /opt/agpeer/downloads /opt/agpeer/soulseek-downloads /opt/agpeer/library
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now agpeer
+#
+# Optional environment overrides (AGPEER_HOST, AGPEER_PORT, AGPEER_DATA_DIR,
+# AGPEER_SOULSEEK_*): drop them into /etc/default/agpeer.
+
+[Unit]
+Description=agpeer P2P transfer client
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Run as an unprivileged dedicated user. Create it AND its writable dirs
+# (data dir, download roots) before first start; the install steps at the top
+# of this file do both.
+User=agpeer
+Group=agpeer
+WorkingDirectory=/opt/agpeer
+Environment=AGPEER_CONFIG=/etc/agpeer/agpeer.toml
+EnvironmentFile=-/etc/default/agpeer
+ExecStart=/usr/local/bin/agpeer serve
+Restart=on-failure
+RestartSec=5
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/agpeer /var/lib/agpeer
+
+[Install]
+WantedBy=multi-user.target

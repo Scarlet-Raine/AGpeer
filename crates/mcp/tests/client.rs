@@ -6,7 +6,7 @@
 
 use agpeer_mcp::AgpeerClient;
 use httpmock::prelude::*;
-use httpmock::Method::{DELETE, GET, POST};
+use httpmock::Method::{DELETE, GET, POST, PUT};
 use serde_json::json;
 
 #[tokio::test]
@@ -87,4 +87,78 @@ async fn delete_transfer_uses_body() {
     let client = AgpeerClient::new(server.base_url(), "tok");
     let resp = client.delete_transfer("t-1", true).await.expect("ok");
     assert_eq!(resp["message"], "transfer removed");
+}
+
+#[tokio::test]
+async fn put_settings_sends_map_and_returns_updated() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(PUT)
+            .path("/api/v1/settings")
+            .json_body(json!({ "hook_search.enabled": true }));
+        then.status(200).json_body(json!({
+            "hook_search.enabled": true,
+            "other": "value"
+        }));
+    });
+
+    let client = AgpeerClient::new(server.base_url(), "tok");
+    let resp = client
+        .put_settings(json!({ "hook_search.enabled": true }))
+        .await
+        .expect("ok");
+    assert_eq!(resp["hook_search.enabled"], true);
+}
+
+#[tokio::test]
+async fn put_and_delete_setting_use_key_paths() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(PUT)
+            .path("/api/v1/settings/hook_search.domains")
+            .json_body(json!(["example.org"]));
+        then.status(200).json_body(json!(["example.org"]));
+    });
+    server.mock(|when, then| {
+        when.method(DELETE)
+            .path("/api/v1/settings/hook_search.domains");
+        then.status(200)
+            .json_body(json!({ "message": "setting deleted" }));
+    });
+
+    let client = AgpeerClient::new(server.base_url(), "tok");
+    let resp = client
+        .put_setting("hook_search.domains", json!(["example.org"]))
+        .await
+        .expect("ok");
+    assert_eq!(resp[0], "example.org");
+
+    let resp = client
+        .delete_setting("hook_search.domains")
+        .await
+        .expect("ok");
+    assert_eq!(resp["message"], "setting deleted");
+}
+
+#[tokio::test]
+async fn list_library_parses_entries() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/v1/library")
+            .header("authorization", "Bearer tok");
+        then.status(200).json_body(json!([
+            {
+                "path": "TV Shows/Show/ep.mkv",
+                "absolute_path": "E:\\Media\\TV Shows\\Show\\ep.mkv",
+                "size": 1234,
+                "is_dir": false
+            }
+        ]));
+    });
+
+    let client = AgpeerClient::new(server.base_url(), "tok");
+    let entries = client.list_library().await.expect("ok");
+    assert_eq!(entries[0]["is_dir"], false);
+    assert_eq!(entries[0]["size"], 1234);
 }

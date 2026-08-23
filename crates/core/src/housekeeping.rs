@@ -6,6 +6,7 @@ use agpeer_storage::{SearchStore, TransferStore};
 use chrono::Utc;
 use serde_json::json;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -130,18 +131,70 @@ pub fn spawn_transfer_sync(
 
                 let db_list: Vec<Transfer> = store.list().await.ok().unwrap_or_default();
                 for mut dt in db_list {
-                    if dt.backend == backend && !dt.state.is_terminal() && !ids.contains(&dt.id) {
-                        dt.state = TransferState::Orphaned;
-                        dt.error = Some("missing from backend".into());
-                        if let Err(e) = store.upsert(&dt).await {
-                            tracing::warn!(transfer_id = %dt.id, error = %e, "transfer sync: orphan upsert failed");
-                        }
-                        state
-                            .bus
-                            .publish("transfer.orphaned", json!({ "id": dt.id }));
+                    if dt.backend != backend || dt.state.is_terminal() || ids.contains(&dt.id) {
+                        continue;
                     }
+                    // A soulseek transfer missing from the backend but whose file
+                    // is fully on disk means the download genuinely finished and
+                    // the backend lost its in-memory record (restart/reconnect).
+                    // Promote it to Completed instead of orphaning a completed
+                    // download. Everything else still becomes Orphaned (files are
+                    // never deleted).
+                    if backend == Backend::Soulseek && soulseek_file_completed(&dt).unwrap_or(false)
+                    {
+                        dt.state = TransferState::Completed;
+                        dt.progress = 1.0;
+                        if dt.completed_at.is_none() {
+                            dt.completed_at = Some(chrono::Utc::now());
+                        }
+                        if let Err(e) = store.upsert(&dt).await {
+                            tracing::warn!(
+                                transfer_id = %dt.id,
+                                error = %e,
+                                "transfer sync: completed-promote upsert failed"
+                            );
+                        }
+                        state.bus.publish(
+                            "transfer.completed",
+                            json!({
+                                "id": dt.id,
+                                "backend": backend.as_str(),
+                                "state": dt.state.as_str(),
+                                "progress": 1.0,
+                            }),
+                        );
+                        continue;
+                    }
+                    dt.state = TransferState::Orphaned;
+                    dt.error = Some("missing from backend".into());
+                    if let Err(e) = store.upsert(&dt).await {
+                        tracing::warn!(transfer_id = %dt.id, error = %e, "transfer sync: orphan upsert failed");
+                    }
+                    state
+                        .bus
+                        .publish("transfer.orphaned", json!({ "id": dt.id }));
                 }
             }
         }
     })
+}
+
+/// Whether a soulseek transfer's data file exists at its expected location
+/// with the full expected size. Soulseek files land as
+/// `<download_root>/<basename>`, so the check uses the filename's last path
+/// segment against the transfer's destination. Returns `None` for non-soulseek
+/// transfers or when the size/filename is unknown.
+fn soulseek_file_completed(t: &Transfer) -> Option<bool> {
+    if t.backend != Backend::Soulseek {
+        return None;
+    }
+    let expected = t.bytes_total.filter(|b| *b > 0)?;
+    let filename = t.metadata.get("soulseek")?.get("filename")?.as_str()?;
+    let basename = filename.rsplit(['/', '\\']).next()?;
+    let path = PathBuf::from(&t.destination).join(basename);
+    Some(
+        std::fs::metadata(&path)
+            .map(|m| m.len() == expected)
+            .unwrap_or(false),
+    )
 }

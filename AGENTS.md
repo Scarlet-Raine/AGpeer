@@ -36,7 +36,9 @@ Use this routing table:
 | Shared models/errors | `docs/job-model.md` | `crates/common` |
 | REST, auth, SSE, OpenAPI | `docs/api.md` | `crates/api` |
 | Torrent behavior | `crates/torrent/SPIKE.md` when relevant | `crates/torrent` |
+| Magnet search | `plan-one-binary.md`, `docs/security.md` | `crates/hook` |
 | Soulseek | `fresh-workspace/SOULSEEK_REWRITE.md` | `crates/soulseek`, `rustsoseek` |
+| Soulseek download interop | `fresh-workspace/RUSTSOSEek_DOWNLOAD_INTEROP.md` (handoff: fix status, PR #1, open work) | `rustsoseek`, `crates/soulseek` |
 | Post-processing/file safety | `docs/postprocessing.md`, `docs/security.md` | `crates/postprocess`, `crates/jobs` |
 | Persistence/reconciliation | `docs/architecture.md`, migrations | `crates/storage`, `crates/core` |
 | Desktop UI | `README.md`, API types | `apps/desktop/src`, `apps/desktop/src-tauri` |
@@ -59,6 +61,8 @@ This is an implemented Rust workspace, not a phase-zero skeleton:
 - `crates/core` owns state, config, secrets, events, reconciliation,
   housekeeping, and post-processing coordination.
 - `crates/api` owns the Axum `/api/v1` API, auth, SSE, DTOs, and OpenAPI.
+- `crates/hook` owns magnet search: a built-in domain-neutral engine/site-template
+  search (no compiled sites) with an optional user-script override.
 - `crates/torrent` embeds `librqbit` behind the transfer abstraction.
 - `crates/soulseek` is a thin adapter that maps the `rustsoseek` native client
   into the shared backend traits.
@@ -68,7 +72,9 @@ This is an implemented Rust workspace, not a phase-zero skeleton:
 - `crates/jobs` and `crates/postprocess` own observable post-processing jobs.
 - `crates/mcp` is a thin MCP-to-REST client for operating agpeer.
 - `crates/debug-mcp` is a bounded, read-only source/log/Git inspection MCP.
-- `apps/desktop` is a Tauri 2 + React/TypeScript client of the REST API.
+- `apps/desktop` is a Tauri 2 + React/TypeScript client of the REST API. Its
+  `dist` can also be embedded into the core binary (`--features webui`) and
+  served by the core as the one-binary UI; the UI remains a pure API client.
 
 The core service is the product. Desktop and MCP are clients; they must not
 bypass the API/core to implement separate business logic.

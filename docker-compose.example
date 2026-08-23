@@ -1,0 +1,51 @@
+# agpeer Docker Compose example (one-binary container).
+#
+# Copy this to docker-compose.yml, fill in Soulseek credentials, and run:
+#   docker compose up -d
+# The WebUI + API are served from http://<host>:41000.
+
+services:
+  agpeer:
+    image: ghcr.io/scarlet-raine/agpeer:latest
+    container_name: agpeer
+    restart: unless-stopped
+    ports:
+      # WebUI + REST API (bind to a private interface / firewall this port;
+      # it carries the API bearer token).
+      - "127.0.0.1:41000:41000"
+      # Torrent inbound peer port (needed for healthy swarms). Pick a free
+      # high port and keep it in sync with [torrent].listen_port in config.
+      - "51234:51234"
+      # Soulseek peer/file connections (optional, needs no inbound).
+      # - "2234:2234/tcp"
+      # - "2234:2234/udp"
+    environment:
+      # Bind inside the container; the 41000 host mapping above decides what
+      # is reachable from outside.
+      AGPEER_HOST: 0.0.0.0
+      AGPEER_DATA_DIR: /data
+      AGPEER_CONFIG: /etc/agpeer.toml
+      # A browser outside the container cannot reach the loopback-only
+      # /__agpeer_token bootstrap, so the token is injected into the served
+      # page. WIDENING-EXPOSURE SETTING: any client that can reach port 41000
+      # can read the API token. Keep the port mapping private.
+      AGPEER_UI_TOKEN_INJECT: "1"
+      # Soulseek credentials via env overrides (or via the mounted config):
+      # AGPEER_SOULSEEK_USERNAME: ""
+      # AGPEER_SOULSEEK_PASSWORD: ""
+      # AGPEER_SOULSEEK_SERVER_ADDR: vps.slsknet.org:2242
+    command: serve
+    volumes:
+      - ./config.toml:/etc/agpeer.toml:ro
+      - agpeer_data:/data
+      # Match the paths in deploy/config.example.toml (the image owns these
+      # directories and runs as an unprivileged user).
+      - ./downloads:/opt/agpeer/downloads
+      - agpeer_soulseek:/opt/agpeer/soulseek-downloads
+      - ./library:/opt/agpeer/library
+    tmpfs:
+      - /tmp
+
+volumes:
+  agpeer_data:
+  agpeer_soulseek:

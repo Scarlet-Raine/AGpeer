@@ -13,6 +13,8 @@ OpenAPI documentation is generated from the Rust API definitions (via
 - Base path: `http://127.0.0.1:41000/api/v1` (port configurable; loopback by default).
 - Content type: `application/json`.
 - Commands remain on REST; realtime events are SSE-only.
+- Built with the `webui` feature, the binary also serves the Desktop UI from
+  `GET /` (SPA). See [architecture.md](architecture.md) "One-binary WebUI".
 
 ## Authentication
 
@@ -29,6 +31,12 @@ Authorization: Bearer <token>
   request. Agents read it from the same file.
 - Requests without a valid token return `401` with error code
   `AuthenticationFailed`.
+
+**Browser token bootstrap (webui builds only).** `GET /__agpeer_token`
+returns the same token value so the in-browser UI can authenticate. It answers
+`403` for any non-loopback peer. Containers/LAN setups may instead set
+`AGPEER_UI_TOKEN_INJECT=1` to have the token embedded in the served page
+(opt-in widening of exposure — see [security.md](security.md)).
 
 ## Errors
 
@@ -189,28 +197,13 @@ TTL (default 24 h); expired results answer `ResultExpired` / `SearchExpired`.
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/postprocess` | Create a post-processing job for a transfer. |
-| `GET` | `/postprocess` | List jobs; optional `?transfer_id=` filter. |
+| `GET` | `/postprocess` | List jobs. |
 | `GET` | `/postprocess/{id}` | Fetch a job with its step states. |
 
-`POST /api/v1/postprocess` request:
-
-```json
-{
-  "transfer_id": "<uuid>",
-  "target": "0",
-  "steps": ["extract", "organize"],
-  "confirmation_token": "optional-token-for-run_installer"
-}
-```
-
-- `target` is the file-scoped target (transfer file index/path); one transfer
-  spawns 0..n jobs.
-- If `steps` is omitted, the rule-driven default pipeline applies.
-- `confirmation_token` is required when the plan includes the privileged
-  `run_installer` step (see [postprocessing.md](postprocessing.md)).
-- Every step is individually observable and retryable; failed steps surface
-  typed errors per step.
+Jobs are created by the core itself (auto-organize on completed transfers
+when `[postprocess].auto_organize` is enabled). There is no manual job
+creation endpoint. Each step is individually observable; failed steps surface
+typed errors per step. See [postprocessing.md](postprocessing.md).
 
 ### Events (SSE)
 
@@ -238,23 +231,38 @@ per stream.
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/settings` | List runtime settings. |
+| `PUT` | `/settings` | Set multiple settings at once; returns the updated map. |
 | `GET` | `/settings/{key}` | Fetch one setting. |
 | `PUT` | `/settings/{key}` | Set a runtime setting. |
+| `DELETE` | `/settings/{key}` | Remove a setting override, restoring the default. |
 
 Settings are persisted in the SQLite `settings` table. Static bootstrap
 values (ports, paths) are configured in the TOML file, not
 here. Secrets are never settable or readable through this API.
 
-`hook_search.enabled` (boolean) controls whether the magnet-search hook is
+`hook_search.enabled` (boolean) controls whether the magnet-search backend is
 permitted to run searches; it is seeded from `[hook_search].enabled` on first
-boot and toggled at runtime (e.g. from the desktop Settings page). New
-`hook` searches return `503 BackendUnavailable` while it is `false`.
+boot and toggled at runtime (e.g. from the desktop Settings page). New `hook`
+searches return `503 BackendUnavailable` while it is `false`.
 
-`hook_search.domains` (JSON array of strings) is the list of sites/indexes the
-hook command should query. It is seeded from `[hook_search].domains`, edited at
-runtime in Settings, and passed to the hook command at search time: a
-`{domains}` token in the command is replaced with the comma-joined list,
-otherwise the list is appended as trailing arguments (after the query).
+`hook_search.domains` (JSON array of strings) is the list of domains the
+**built-in** engine search restricts itself to (`site:<domain>` from the
+query). It is seeded from `[hook_search].domains` and edited at runtime in
+Settings.
+
+`hook_search.sites` (JSON array of objects) is the list of site templates for
+the built-in search. Each entry is `{ domain, search, extract, max_pages?,
+pattern? }`:
+
+- `search` is a URL template in which `{query}` is substituted.
+- `extract` selects the generic layout strategy: `table` (direct `magnet:`
+  links on the result page), `detail` (follow up to `max_pages` result links
+  and take each page's first magnet), or `regex` (apply `pattern`).
+
+No site is special-cased in code; templates are user config and are seeded
+from `[hook_search].sites`. When a `[hook_search]` `command` is configured it
+overrides the built-in search entirely; `{domains}` in the command is replaced
+with the comma-joined domain list (or appended as trailing arguments).
 
 ## Command-style examples
 
@@ -271,9 +279,8 @@ transfer_get(id)                           → GET  /api/v1/transfers/{id}
 transfer_pause(id)                         → POST /api/v1/transfers/{id}/pause
 transfer_resume(id)                        → POST /api/v1/transfers/{id}/resume
 transfer_cancel(id, delete_data=false)     → POST /api/v1/transfers/{id}/cancel
-postprocess_extract(id)                    → POST /api/v1/postprocess
-postprocess_organize(id, library)          → POST /api/v1/postprocess
-postprocess_run_installer(id, confirmation_token) → POST /api/v1/postprocess
+postprocess_list()                         → GET  /api/v1/postprocess
+postprocess_get(job_id)                    → GET  /api/v1/postprocess/{id}
 ```
 
 Unrestricted shell execution is **not** exposed as an agent tool. The future

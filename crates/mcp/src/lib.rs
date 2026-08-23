@@ -88,6 +88,27 @@ impl AgpeerClient {
         self.decode(req).await
     }
 
+    async fn delete(&self, path: &str) -> Result<Value, ClientError> {
+        let req = self
+            .http
+            .delete(self.url(path))
+            .bearer_auth(&self.token)
+            .send()
+            .await?;
+        self.decode(req).await
+    }
+
+    async fn put(&self, path: &str, body: Value) -> Result<Value, ClientError> {
+        let req = self
+            .http
+            .put(self.url(path))
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await?;
+        self.decode(req).await
+    }
+
     async fn decode(&self, resp: reqwest::Response) -> Result<Value, ClientError> {
         let status = resp.status();
         let text = resp.text().await?;
@@ -145,8 +166,11 @@ impl AgpeerClient {
     }
 
     pub async fn delete_transfer(&self, id: &str, delete_data: bool) -> Result<Value, ClientError> {
-        self.delete_body(&format!("/transfers/{id}"), json!({ "delete_data": delete_data }))
-            .await
+        self.delete_body(
+            &format!("/transfers/{id}"),
+            json!({ "delete_data": delete_data }),
+        )
+        .await
     }
 
     pub async fn list_searches(&self) -> Result<Value, ClientError> {
@@ -194,12 +218,28 @@ impl AgpeerClient {
         self.get(&format!("/postprocess/{id}")).await
     }
 
-    pub async fn create_postprocess(&self, request: Value) -> Result<Value, ClientError> {
-        self.post("/postprocess", Some(request)).await
+    pub async fn list_library(&self) -> Result<Value, ClientError> {
+        self.get("/library").await
     }
 
     pub async fn get_settings(&self) -> Result<Value, ClientError> {
         self.get("/settings").await
+    }
+
+    pub async fn put_settings(&self, settings: Value) -> Result<Value, ClientError> {
+        self.put("/settings", settings).await
+    }
+
+    pub async fn get_setting(&self, key: &str) -> Result<Value, ClientError> {
+        self.get(&format!("/settings/{key}")).await
+    }
+
+    pub async fn put_setting(&self, key: &str, value: Value) -> Result<Value, ClientError> {
+        self.put(&format!("/settings/{key}"), value).await
+    }
+
+    pub async fn delete_setting(&self, key: &str) -> Result<Value, ClientError> {
+        self.delete(&format!("/settings/{key}")).await
     }
 }
 
@@ -333,37 +373,27 @@ pub struct DownloadResultInput {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, Default)]
-pub struct CreatePostprocessInput {
-    pub transfer_id: String,
-    /// The transfer file index/path this job targets.
-    #[serde(default)]
-    pub target: Option<String>,
-    /// Optional explicit pipeline, e.g. `["extract", "organize"]`.
-    #[serde(default)]
-    pub steps: Option<Vec<String>>,
-    /// Required when the plan includes the privileged `run_installer` step.
-    #[serde(default)]
-    pub confirmation_token: Option<String>,
+pub struct SettingsMapInput {
+    /// Settings to set, e.g. `{"hook_search.enabled": true}`.
+    pub settings: HashMap<String, Value>,
 }
 
-impl From<CreatePostprocessInput> for Value {
-    fn from(p: CreatePostprocessInput) -> Self {
-        let mut map = serde_json::Map::new();
-        map.insert("transfer_id".into(), Value::String(p.transfer_id));
-        if let Some(t) = p.target {
-            map.insert("target".into(), Value::String(t));
-        }
-        if let Some(s) = p.steps {
-            map.insert(
-                "steps".into(),
-                Value::Array(s.into_iter().map(Value::String).collect()),
-            );
-        }
-        if let Some(c) = p.confirmation_token {
-            map.insert("confirmation_token".into(), Value::String(c));
-        }
-        Value::Object(map)
+impl From<SettingsMapInput> for Value {
+    fn from(p: SettingsMapInput) -> Self {
+        Value::Object(p.settings.into_iter().collect())
     }
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema, Default)]
+pub struct KeyInput {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SettingValueInput {
+    pub key: String,
+    /// JSON value to store for this setting.
+    pub value: Value,
 }
 
 // ---------------------------------------------------------------------------
@@ -518,18 +548,46 @@ impl AgpeerServer {
     }
 
     #[tool(
-        description = "Create a post-processing job for a transfer. Provides a confirmation_token only for the explicit run_installer step."
+        description = "List the organized media library (files under the configured library root). Empty when no library root is configured."
     )]
-    async fn create_postprocess_job(
-        &self,
-        Parameters(p): Parameters<CreatePostprocessInput>,
-    ) -> Result<String, ErrorData> {
-        call(|| self.client.create_postprocess(p.into())).await
+    async fn list_library(&self) -> Result<String, ErrorData> {
+        call(|| self.client.list_library()).await
     }
 
     #[tool(description = "List runtime settings (secrets are never returned).")]
     async fn get_settings(&self) -> Result<String, ErrorData> {
         call(|| self.client.get_settings()).await
+    }
+
+    #[tool(
+        description = "Set multiple runtime settings at once. Returns the full settings map. Secrets are never settable through this API."
+    )]
+    async fn put_settings(
+        &self,
+        Parameters(p): Parameters<SettingsMapInput>,
+    ) -> Result<String, ErrorData> {
+        call(|| self.client.put_settings(p.into())).await
+    }
+
+    #[tool(description = "Fetch a single runtime setting by key.")]
+    async fn get_setting(&self, Parameters(p): Parameters<KeyInput>) -> Result<String, ErrorData> {
+        call(|| self.client.get_setting(&p.key)).await
+    }
+
+    #[tool(description = "Set one runtime setting by key. The value is stored as given JSON.")]
+    async fn put_setting(
+        &self,
+        Parameters(p): Parameters<SettingValueInput>,
+    ) -> Result<String, ErrorData> {
+        call(|| self.client.put_setting(&p.key, p.value)).await
+    }
+
+    #[tool(description = "Delete a runtime setting by key, restoring its default.")]
+    async fn delete_setting(
+        &self,
+        Parameters(p): Parameters<KeyInput>,
+    ) -> Result<String, ErrorData> {
+        call(|| self.client.delete_setting(&p.key)).await
     }
 }
 
@@ -605,8 +663,12 @@ mod tests {
             "download_search_result",
             "list_postprocess_jobs",
             "get_postprocess_job",
-            "create_postprocess_job",
+            "list_library",
             "get_settings",
+            "put_settings",
+            "get_setting",
+            "put_setting",
+            "delete_setting",
         ] {
             assert!(
                 names.iter().any(|n| n == expected),

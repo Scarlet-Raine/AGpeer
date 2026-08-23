@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "User-configured magnet-search hook backend (SearchBackend only)."
+description = "Magnet-search backend: built-in engine/site-template search plus an optional user-configured external command override (SearchBackend only)."
 
 [dependencies]
 agpeer-common.workspace = true
@@ -16,4 +16,5 @@ uuid.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+regex.workspace = true
+reqwest.workspace = true

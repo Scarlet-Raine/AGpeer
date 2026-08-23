@@ -251,6 +251,14 @@ async fn run_serve(config_override: Option<PathBuf>) -> Result<(), String> {
                 )
                 .await;
         }
+        if !settings.contains_key("hook_search.sites") {
+            let _ = store
+                .set(
+                    "hook_search.sites",
+                    &serde_json::json!(config.hook_search.sites),
+                )
+                .await;
+        }
     }
 
     let state = AppState::new(config.clone(), db, token);
@@ -341,14 +349,15 @@ async fn run_serve(config_override: Option<PathBuf>) -> Result<(), String> {
         tracing::warn!("soulseek backend disabled");
     }
 
-    // User-configured magnet search hook. Search-only: discovered magnets are
-    // pulled through the torrent backend, so no transfer backend is registered.
-    // Registration only requires a configured command; the runtime `enabled`
-    // toggle (settings table, WebUI) decides whether searches are actually
-    // permitted, so it can be flipped without a restart.
-    if config.hook_search.command.is_empty() {
-        tracing::warn!("[hook_search] command is empty; magnet search unavailable");
-    } else {
+    // Magnet search backend, always registered. Discovery is search-only:
+    // found magnets are pulled through the torrent backend, so no transfer
+    // backend is registered here. With no `[hook_search].command` configured
+    // the built-in domain-neutral engine/site-template search is used (zero
+    // external files); a configured `command` overrides it with an external
+    // script. The runtime `enabled` toggle (settings table, WebUI) decides
+    // whether searches are actually permitted, so it can be flipped without a
+    // restart.
+    {
         let timeout = std::time::Duration::from_secs(config.hook_search.timeout_secs.max(1));
         let backend = Arc::new(agpeer_hook::HookSearchBackend::new(
             config.hook_search.command.clone(),
@@ -357,7 +366,10 @@ async fn run_serve(config_override: Option<PathBuf>) -> Result<(), String> {
             Some(state.db.clone()),
         ));
         state.register_search_backend(Backend::Hook, backend);
-        tracing::info!("hook search backend registered (runtime-enabled via settings)");
+        tracing::info!(
+            command_configured = !config.hook_search.command.is_empty(),
+            "hook search backend registered (built-in search, runtime-enabled via settings)"
+        );
     }
 
     spawn_ttl_sweeper(state.clone(), std::time::Duration::from_secs(60));
@@ -371,10 +383,13 @@ async fn run_serve(config_override: Option<PathBuf>) -> Result<(), String> {
     tracing::info!("agpeer core listening on http://{addr}");
     tracing::info!("API docs: http://{addr}/api/v1/docs");
 
-    let serve_result = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|e| format!("server error: {e}"));
+    let serve_result = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .map_err(|e| format!("server error: {e}"));
 
     serve_result
 }

@@ -7,6 +7,12 @@ rust-version.workspace = true
 repository.workspace = true
 description = "Axum HTTP API, SSE events, auth, and OpenAPI."
 
+[features]
+# Serves the Desktop UI (`apps/desktop/dist`) from the core as a single
+# self-contained binary. Default off so plain `cargo build`/`cargo test` never
+# require the frontend to have been built.
+webui = ["dep:rust-embed"]
+
 [dependencies]
 agpeer-common.workspace = true
 agpeer-storage.workspace = true
@@ -24,6 +30,7 @@ axum.workspace = true
 futures.workspace = true
 utoipa.workspace = true
 utoipa-swagger-ui.workspace = true
+rust-embed = { version = "8", optional = true }
 
 [dev-dependencies]
 sqlx.workspace = true

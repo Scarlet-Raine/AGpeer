@@ -5,29 +5,6 @@ on:
   pull_request:
 
 jobs:
-  backend:
-    name: Backend (Rust)
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Format check
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Test
-        run: cargo test --workspace
-
   frontend:
     name: Frontend (Desktop)
     runs-on: ubuntu-latest
@@ -53,3 +30,54 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Upload WebUI dist (embedded into the one-binary build)
+        uses: actions/upload-artifact@v4
+        with:
+          name: webui-dist
+          path: apps/desktop/dist
+          if-no-files-found: error
+
+  backend:
+    name: Backend (Rust)
+    runs-on: ${{ matrix.os }}
+    needs: frontend
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # `cargo clippy --all-features` enables the `webui` feature, which embeds
+      # apps/desktop/dist (built by the frontend job above).
+      - name: Download WebUI dist
+        uses: actions/download-artifact@v4
+        with:
+          name: webui-dist
+          path: apps/desktop/dist
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Domain-neutrality guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No torrent-site/tracker domain strings may be compiled into src/ or
+          # crates/: search scope lives exclusively in user config, and the
+          # optional external magnets.py example is not compiled in.
+          if rg -n --glob '*.rs' -i 'nyaa\.si|1337x\.to|thepiratebay|rutracker|torrentgalaxy' src crates; then
+            echo "::error::Real torrent-site/tracker strings found in compiled sources; search behavior must stay domain-neutral." >&2
+            exit 1
+          fi

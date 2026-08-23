@@ -46,6 +46,7 @@ kilo.json
 .mcp.json
 .codex/
 .cursor/
+.zcode/
 __pycache__/
 *.pyc
 

@@ -17,6 +17,10 @@ path = "src/main.rs"
 # build (falls back to the in-memory reference engine).
 default = ["rqbit"]
 rqbit = ["agpeer-torrent/rqbit"]
+# Serves the desktop WebUI from the core as one self-contained binary.
+# Requires `apps/desktop/dist` to have been built first (`npm ci && npm run
+# build` in apps/desktop). Default off: plain builds/tests stay light.
+webui = ["agpeer-api/webui"]
 
 [workspace]
 resolver = "2"
@@ -33,6 +37,14 @@ members = [
     "crates/mcp",
     "crates/debug-mcp",
 ]
+
+# One-binary delivery: optimize the release build for a small, fast, single
+# artifact. `panic = "abort"` is deliberately skipped so graceful shutdown
+# pathing (Ctrl+C / SIGTERM) stays intact.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
 
 [workspace.package]
 version = "0.1.0"
@@ -53,7 +65,7 @@ async-trait = "0.1"
 
 # runtime / networking
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "process", "fs", "io-util", "net"] }
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = "0.7"
 futures = "0.3"
@@ -67,6 +79,9 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid
 # observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# text processing (built-in magnet search templates)
+regex = "1"
 
 # CLI / config
 clap = { version = "4", features = ["derive"] }
@@ -89,7 +104,7 @@ agpeer-soulseek = { path = "crates/soulseek" }
 agpeer-hook = { path = "crates/hook" }
 agpeer-jobs = { path = "crates/jobs" }
 agpeer-postprocess = { path = "crates/postprocess" }
-rustsoseek = { git = "https://github.com/Scarlet-Raine/RustSoSeek", tag = "v0.1.1" }
+rustsoseek = { git = "https://github.com/Scarlet-Raine/RustSoSeek", tag = "v0.1.2" }
 
 [dependencies]
 agpeer-common.workspace = true

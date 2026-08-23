@@ -15,10 +15,11 @@ protocol-specific behavior stays behind adapters.
 | `crates/core` | Application state, TOML bootstrap config loading, the secret-store abstraction, and the event bus (tokio broadcast → SSE fan-out with per-stream throttling). |
 | `crates/api` | Axum HTTP server: versioned `/api/v1` routes, bearer-token middleware, SSE endpoint, OpenAPI generation (`utoipa`). |
 | `crates/torrent` | `TransferBackend` implementation over embedded `librqbit`. Normalizes rqbit state into `TransferState`; backend metadata lives in a namespaced `metadata` field. |
+| `crates/hook` | Magnet-search backend (`SearchBackend` only). Default path is the **built-in** domain-neutral search (generic search engines scoped to user-configured domains + user-configured site templates); an optional external command overrides it. |
 | `crates/soulseek` | Thin adapter mapping the `rustsoseek` native Soulseek client (`SearchBackend` + `TransferBackend`) into the shared model. Wire-format types stay in `rustsoseek`. |
 | `crates/jobs` | Post-processing job and step model (`Job`, `Step`, `StepKind`, states). |
 | `crates/postprocess` | Post-processing engine: classifier, `Extractor` adapter, media organization, installer policy (Phase 3). |
-| `apps/desktop` | Tauri 2 + React + TypeScript shell. Spawns and manages the core process, reads/injects the bearer token, and renders the UI over the core API only. |
+| `apps/desktop` | React + TypeScript UI. Runs in a Tauri shell (spawns the core, injects the bearer token) or — with the `webui` build feature — embedded into the core binary and served from `GET /` by the core. It renders over the core API only. |
 
 ## Process model
 
@@ -26,9 +27,16 @@ protocol-specific behavior stays behind adapters.
   The root package builds this binary.
 - `agpeer migrate` applies SQLite migrations; `agpeer serve` starts the Axum
   API, initializes backends, and reconciles state.
+- With the `webui` feature (`cargo build --release --features webui`), the
+  Desktop UI's `dist/` is embedded into the binary and served by the core from
+  `GET /` — **one process, one port**. This is the deployment surface for
+  headless machines and containers: NSSM on Windows (`run/service-install.ps1`),
+  systemd (`run/systemd/agpeer.service`) and Docker (`Dockerfile` +
+  `docker-compose.example`). The feature is off by default so plain
+  builds/tests never require the frontend.
 - The Tauri desktop shell spawns the core as a child process and health-polls
   it until ready. The core also runs standalone, so the REST API is usable
-  without the desktop UI.
+  without any UI.
 - The Soulseek wire protocol is handled directly by the `rustsoseek` library
   (login, search, download, distributed search) over TCP to the Soulseek
   server; no sidecar process is involved.
@@ -37,8 +45,13 @@ protocol-specific behavior stays behind adapters.
 
 - **TOML** is static bootstrap configuration: ports, paths, credential
   references. Loaded by `crates/core`.
+- **Environment variables** overlay the bootstrap config per-run (headless /
+  service / container friendly): `AGPEER_CONFIG`, `AGPEER_HOST`,
+  `AGPEER_PORT`, `AGPEER_DATA_DIR`, `AGPEER_SOULSEEK_*`.
 - **SQLite `settings` table** holds runtime-settable settings exposed via
-  `/api/v1/settings`. The TOML file is not rewritten at runtime.
+  `/api/v1/settings` (`hook_search.enabled`, `hook_search.domains`,
+  `hook_search.sites`, queue rate limits). The TOML file is not rewritten at
+  runtime.
 
 ## Backend abstraction
 
@@ -71,11 +84,20 @@ For v1:
 
 - Torrent implements `TransferBackend`.
 - Soulseek implements both `SearchBackend` and `TransferBackend`.
-- Hook (`[hook_search]`) implements `SearchBackend` only: a user-configured
-  external command returns magnet links, which are pulled through the torrent
-  backend. It never owns transfers. The runtime `hook_search.domains` setting
-  (editable in Settings) is handed to the command at search time so it knows
-  which sites/indexes to query.
+- Hook (`crates/hook`) implements `SearchBackend` only and is **always
+  registered**:
+  - **Default (built-in):** a domain-neutral search that queries generic
+    search engines (`html.duckduckgo.com` → `lite.duckduckgo.com` → Bing) with
+    a `site:<domain> <query> magnet:?xt=urn:btih:` query per
+    `hook_search.domains` entry, plus user-configured `hook_search.sites`
+    templates. Zero external files; **no site is compiled in** — the CI
+    domain-neutrality guard enforces this (`src/` and `crates/` contain no
+    torrent-site/tracker strings).
+  - **Override:** a user-configured `[hook_search].command` runs instead. The
+    command returns magnet links, which are pulled through the torrent backend
+    like any other caller-supplied source. It never owns transfers.
+  - The runtime `hook_search.domains` and `hook_search.sites` settings
+    (editable in Settings) drive the built-in path at search time.
 - HTTP/direct downloads may implement `TransferBackend` later.
 
 IDs are opaque, application-owned UUIDs; backend IDs are never exposed as the
@@ -122,3 +144,22 @@ Reconciliation rules:
 
 Search results are bounded and expiring (default TTL 24 h); transfer records
 persist.
+
+## One-binary WebUI
+
+With the `webui` feature, `crates/api` embeds `apps/desktop/dist` (via
+`rust-embed`) and serves it from the core:
+
+- `GET /` and unknown non-`api/` paths serve the SPA (index.html or the exact
+  embedded asset); `api/`-prefixed misses answer JSON 404.
+- `GET /__agpeer_token` bootstraps the browser UI with the bearer token. It is
+  **loopback-only** (non-loopback peers get `403`); the router is served with
+  `into_make_service_with_connect_info` so the peer address is available.
+- For containers/LAN where the browser cannot reach loopback, setting
+  `AGPEER_UI_TOKEN_INJECT=1` makes the core inject
+  `window.__AGPEER_TOKEN__` into the served page instead. This is a
+  **widening-exposure setting**: any client that can fetch the page gets the
+  API token, so it must only be used on private ports/networks.
+- The frontend API client uses same-origin relative `/api/v1` calls when
+  served by the core, so `AGPEER_HOST`/`AGPEER_PORT` overrides work without
+  reconfiguring the UI.

@@ -87,10 +87,15 @@ pub struct HookSearchConfig {
     /// literal token `{query}` is replaced with the search term and `{domains}`
     /// with the comma-joined domain list (query/domains are appended as final
     /// arguments when not referenced). No shell is used; values pass verbatim.
+    /// Empty = built-in search (generic engine + site templates).
     pub command: Vec<String>,
-    /// Initial domain list handed to the hook command (editable at runtime in
-    /// the WebUI via the `hook_search.domains` setting).
+    /// Initial domain list handed to the built-in engine search (editable at
+    /// runtime in the WebUI via the `hook_search.domains` setting).
     pub domains: Vec<String>,
+    /// Initial per-site search templates (editable at runtime via the
+    /// `hook_search.sites` setting). User-configured only; the binary compiles
+    /// no site behavior.
+    pub sites: Vec<agpeer_common::HookSearchSite>,
     pub timeout_secs: u64,
     pub max_results: usize,
 }
@@ -101,6 +106,7 @@ impl Default for HookSearchConfig {
             enabled: false,
             command: Vec::new(),
             domains: Vec::new(),
+            sites: Vec::new(),
             timeout_secs: 30,
             max_results: 100,
         }
@@ -121,6 +127,14 @@ pub struct PostprocessConfig {
     pub library_root: String,
     /// Move completed downloads into the library tree automatically.
     pub auto_organize: bool,
+    /// Subfolder under `library_root` for series episodes
+    /// (default `TV Shows`).
+    pub tv_dir: Option<String>,
+    /// Subfolder under `library_root` for films (default `Movies`).
+    pub movies_dir: Option<String>,
+    /// Subfolder under `library_root` for anime episodes; when unset, anime
+    /// goes to `tv_dir`.
+    pub anime_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,9 +186,12 @@ impl AppConfig {
     }
 
     /// Overlay runtime values from environment variables. Currently this lets
-    /// Soulseek settings be supplied per-run without editing the config file
-    /// (or committing credentials):
+    /// connection/soulseek settings be supplied per-run without editing the
+    /// config file (or committing credentials):
     ///
+    /// - `AGPEER_HOST` — bind host for the HTTP server
+    /// - `AGPEER_PORT` — HTTP server port
+    /// - `AGPEER_DATA_DIR` — data directory (DB, token, logs)
     /// - `AGPEER_SOULSEEK_SERVER_ADDR` — Soulseek server address
     /// - `AGPEER_SOULSEEK_LISTEN_PORT` — local listen port for peer/file connections
     /// - `AGPEER_SOULSEEK_USERNAME`, `AGPEER_SOULSEEK_PASSWORD`
@@ -186,6 +203,21 @@ impl AppConfig {
     /// supplied lookup, which keeps the logic testable without mutating the
     /// process-global environment.
     pub fn apply_env_overrides_from(&mut self, get: impl Fn(&str) -> Option<String>) {
+        if let Some(host) = get("AGPEER_HOST") {
+            if !host.trim().is_empty() {
+                self.server.host = host;
+            }
+        }
+        if let Some(port) = get("AGPEER_PORT") {
+            if let Ok(port) = port.parse() {
+                self.server.port = port;
+            }
+        }
+        if let Some(dir) = get("AGPEER_DATA_DIR") {
+            if !dir.trim().is_empty() {
+                self.data_dir = dir;
+            }
+        }
         if let Some(addr) = get("AGPEER_SOULSEEK_SERVER_ADDR") {
             if !addr.trim().is_empty() {
                 self.soulseek.server_addr = addr;
@@ -318,6 +350,46 @@ mod tests {
             std::collections::HashMap::from([("AGPEER_SOULSEEK_LISTEN_PORT", "not-a-port")]);
         config.apply_env_overrides_from(|key| overrides.get(key).map(|v| v.to_string()));
         assert_eq!(config.soulseek.listen_port, port);
+    }
+
+    #[test]
+    fn runtime_env_override_host_port_data_dir() {
+        let mut config = AppConfig::default();
+        let overrides = [
+            ("AGPEER_HOST", "0.0.0.0"),
+            ("AGPEER_PORT", "42000"),
+            ("AGPEER_DATA_DIR", "C:/tmp/agpeer-env-test"),
+        ]
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+        config.apply_env_overrides_from(|key| overrides.get(key).map(|v| v.to_string()));
+
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 42000);
+        assert_eq!(config.data_dir, "C:/tmp/agpeer-env-test");
+    }
+
+    #[test]
+    fn runtime_env_override_ignores_invalid_port() {
+        let mut config = AppConfig::default();
+        let default_port = config.server.port;
+        let overrides = std::collections::HashMap::from([("AGPEER_PORT", "not-a-port")]);
+        config.apply_env_overrides_from(|key| overrides.get(key).map(|v| v.to_string()));
+        assert_eq!(config.server.port, default_port);
+    }
+
+    #[test]
+    fn env_overrides_apply_before_serve_binding() {
+        // A headless "env-only" launch (no TOML edits) must be able to move the
+        // bind address, port, and data dir without a config file.
+        let mut config = AppConfig::default();
+        config.apply_env_overrides_from(|key| match key {
+            "AGPEER_HOST" => Some("0.0.0.0".into()),
+            "AGPEER_DATA_DIR" => Some("temp-dir".into()),
+            _ => None,
+        });
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.data_dir, "temp-dir");
     }
 
     #[test]

@@ -1,6 +1,25 @@
 import type { Backend, StatusResponse, Transfer, BackendStatus, AddTransferRequest, AddTransferResponse, TransferFile, SearchResult } from "./types";
 
-export const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? "http://127.0.0.1:41000";
+/**
+ * API base URL for the UI.
+ *
+ * - `VITE_API_URL` wins when set (explicit cross-origin target).
+ * - Vite dev server and the Tauri shell target the loopback core port.
+ * - Otherwise the page is served by the core itself (one-binary `webui`
+ *   build): the API is same-origin, so relative `fetch("/api/v1/...")` works
+ *   regardless of `AGPEER_HOST`/`AGPEER_PORT`.
+ */
+function resolveApiBase(): string {
+  const explicit = import.meta.env.VITE_API_URL as string | undefined;
+  if (explicit) return explicit;
+  const isTauri =
+    typeof window !== "undefined" &&
+    !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  if (import.meta.env.DEV || isTauri) return "http://127.0.0.1:41000";
+  return "";
+}
+
+export const API_BASE = resolveApiBase();
 
 const REQUEST_TIMEOUT_MS = 60_000;
 

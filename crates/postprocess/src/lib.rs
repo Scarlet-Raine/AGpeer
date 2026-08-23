@@ -9,6 +9,9 @@ pub mod pipeline;
 
 pub use classify::{classify, Category};
 pub use extract::{is_multipart, sanitize_entry_path, Extractor, SevenZipExtractor};
-pub use organize::{clean_title, media_kind_for, title_from_path, MediaKind, Organizer};
+pub use organize::{
+    clean_title, looks_like_anime, media_kind_for, title_from_path, MediaHint, MediaKind,
+    OrganizeHints, Organizer,
+};
 pub use pathutil::{canonicalize_safe, is_within};
 pub use pipeline::{InstallerPolicy, Pipeline};

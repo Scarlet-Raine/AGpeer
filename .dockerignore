@@ -1,0 +1,23 @@
+# Ignore build, runtime, and private artifacts when building the container
+# image. The one-binary build embeds apps/desktop/dist (built in-stage).
+target
+node_modules
+**/node_modules
+apps/desktop/dist
+apps/desktop/dist-ssr
+run
+data
+downloads
+soulseek-downloads
+sidecars
+fresh-workspace
+.git
+.github
+__pycache__
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.log
+*.pem
+*.key
+.github/codeql

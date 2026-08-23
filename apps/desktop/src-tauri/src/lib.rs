@@ -6,8 +6,6 @@
 //! - optionally spawn the `agpeer` core binary as a child process when the
 //!   `AGPEER_CORE_BIN` environment variable is set.
 
-use std::path::PathBuf;
-
 /// Read the core API token.
 ///
 /// Resolution order:
@@ -16,7 +14,9 @@ use std::path::PathBuf;
 ///    the core persists its token into);
 /// 3. repo-local dev fallback `run/data/token` (what the core writes when run
 ///    from this workspace with `run/config.toml`);
-/// 4. `<OS app-data dir>/agpeer/token` (Windows: `%APPDATA%\agpeer\token`).
+/// 4. `<OS app-data dir>/agpeer/data/token` — mirrors the core's
+///    `ProjectDirs::from("dev", "agpeer", "agpeer").data_dir()` default
+///    (`%APPDATA%\agpeer\data` on Windows, `~/.local/share/agpeer` on Linux).
 #[tauri::command]
 fn get_api_token() -> Result<String, String> {
     if let Ok(path) = std::env::var("AGPEER_TOKEN_FILE") {
@@ -47,10 +47,9 @@ fn get_api_token() -> Result<String, String> {
             }
         }
     }
-    let appdata = std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    let token_path = appdata.join("agpeer").join("token");
+    let token_path = directories::ProjectDirs::from("dev", "agpeer", "agpeer")
+        .map(|dirs| dirs.data_dir().join("token"))
+        .ok_or_else(|| "no OS app-data directory available".to_string())?;
     let raw = std::fs::read_to_string(&token_path)
         .map_err(|e| format!("no token at {}: {e}", token_path.display()))?;
     let t = raw.trim();

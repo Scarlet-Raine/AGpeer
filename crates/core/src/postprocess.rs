@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use agpeer_common::{Error, Transfer, TransferId};
 use agpeer_jobs::{Job, JobState, Step, StepKind, StepState};
-use agpeer_postprocess::Organizer;
+use agpeer_postprocess::{MediaHint, OrganizeHints, Organizer};
 use agpeer_storage::JobStore;
 use chrono::Utc;
 use serde_json::json;
@@ -25,9 +25,46 @@ pub fn auto_organize_enabled(state: &AppState) -> bool {
         && !state.config.postprocess.library_root.trim().is_empty()
 }
 
-/// Build an organizer for the configured library root.
+/// Build an organizer for the configured library root, honoring folder-name
+/// overrides from `[postprocess]` (`tv_dir`, `movies_dir`, `anime_dir`).
 fn organizer(state: &AppState) -> Organizer {
-    Organizer::new(PathBuf::from(&state.config.postprocess.library_root))
+    let mut organizer = Organizer::new(PathBuf::from(&state.config.postprocess.library_root));
+    if let Some(dir) = state.config.postprocess.tv_dir.as_deref() {
+        organizer = organizer.with_tv_folder(dir);
+    }
+    if let Some(dir) = state.config.postprocess.movies_dir.as_deref() {
+        organizer = organizer.with_movies_folder(dir);
+    }
+    organizer = organizer.with_anime_folder(state.config.postprocess.anime_dir.clone());
+    organizer
+}
+
+/// Routing hints carried on the transfer's metadata, set at `add_transfer`
+/// time under the namespaced `"postprocess"` key:
+///
+/// ```json
+/// {"postprocess": {"media": "tv|movie|anime", "music_path": "Artist/Album"}}
+/// ```
+fn hints_from_metadata(
+    metadata: &std::collections::HashMap<String, serde_json::Value>,
+) -> OrganizeHints {
+    let Some(serde_json::Value::Object(map)) = metadata.get("postprocess") else {
+        return OrganizeHints::default();
+    };
+    OrganizeHints {
+        media: map.get("media").and_then(|v| v.as_str()).and_then(|s| {
+            match s.to_ascii_lowercase().as_str() {
+                "tv" | "series" | "show" => Some(MediaHint::Tv),
+                "movie" | "film" => Some(MediaHint::Movie),
+                "anime" => Some(MediaHint::Anime),
+                _ => None,
+            }
+        }),
+        music_path: map
+            .get("music_path")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    }
 }
 
 /// Resolve the absolute path of a completed file within a transfer.
@@ -70,6 +107,7 @@ pub async fn organize_completed_transfer(
     transfer: &Transfer,
 ) -> Result<(), Error> {
     let organizer = organizer(state);
+    let hints = hints_from_metadata(&transfer.metadata);
 
     let steps = vec![
         Step {
@@ -138,7 +176,7 @@ pub async fn organize_completed_transfer(
                 absolute.display()
             )))
         } else {
-            organizer.organize(absolute).map(|_| ())
+            organizer.organize_with_hints(absolute, &hints).map(|_| ())
         };
 
         match result {
@@ -253,6 +291,9 @@ mod tests {
             postprocess: crate::config::PostprocessConfig {
                 library_root: library.to_string_lossy().into_owned(),
                 auto_organize: true,
+                tv_dir: None,
+                movies_dir: None,
+                anime_dir: None,
             },
             ..crate::config::AppConfig::default()
         };
@@ -283,6 +324,49 @@ mod tests {
         assert_eq!(jobs[0].state, JobState::Completed);
 
         let _: DateTime<Utc> = Utc::now();
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn metadata_hints_route_anime_and_custom_folders() {
+        let base = std::env::temp_dir().join(format!("agpeer-pp-{}", uuid::Uuid::new_v4()));
+        let downloads = base.join("downloads");
+        let library = base.join("library");
+        std::fs::create_dir_all(&downloads).unwrap();
+        std::fs::write(downloads.join("Frieren.S02E10.mkv"), b"episode").unwrap();
+
+        let config = crate::config::AppConfig {
+            postprocess: crate::config::PostprocessConfig {
+                library_root: library.to_string_lossy().into_owned(),
+                auto_organize: true,
+                tv_dir: Some("Shows".into()),
+                movies_dir: None,
+                anime_dir: Some("Anime".into()),
+            },
+            ..crate::config::AppConfig::default()
+        };
+        let state = AppState::new(config, mem_db().await, "token".into());
+        let mut transfer = completed_transfer(downloads.to_string_lossy().into_owned());
+        transfer.display_name = "Frieren.S02E10.mkv".into();
+        transfer.files[0].path = "Frieren.S02E10.mkv".into();
+        transfer
+            .metadata
+            .insert("postprocess".into(), serde_json::json!({"media": "anime"}));
+
+        organize_completed_transfer(&state, &transfer)
+            .await
+            .expect("organize should succeed");
+
+        let organized = library
+            .join("Anime")
+            .join("Frieren")
+            .join("Season 02")
+            .join("Frieren.S02E10.mkv");
+        assert!(
+            organized.is_file(),
+            "file missing at {}",
+            organized.display()
+        );
         std::fs::remove_dir_all(&base).unwrap();
     }
 }

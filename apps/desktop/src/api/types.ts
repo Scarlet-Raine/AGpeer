@@ -1,5 +1,23 @@
 export type Backend = "torrent" | "soulseek" | "hook";
 
+export type ExtractStrategy = "table" | "detail" | "regex";
+
+/**
+ * A user-configured magnet-search site template (rendered by the built-in
+ * parser; nothing site-specific is compiled into the binary).
+ */
+export interface SiteTemplate {
+  domain: string;
+  /** Search URL template with `{query}` substituted at search time. */
+  search: string;
+  /** `table` (direct magnet links), `detail` (follow detail pages), or `regex`. */
+  extract: ExtractStrategy;
+  /** For `detail`: how many detail pages to follow. */
+  max_pages?: number | null;
+  /** For `regex`: the literal regex to apply. */
+  pattern?: string | null;
+}
+
 export type TransferState =
   | "queued" | "resolving" | "downloading" | "paused" | "verifying"
   | "completed" | "postprocessing" | "ready" | "failed" | "cancelled" | "orphaned";

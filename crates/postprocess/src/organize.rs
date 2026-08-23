@@ -30,11 +30,11 @@ use crate::classify::Category;
 /// How a media file should be nested under the library root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaKind {
-    /// A single film: `Movies/<Title> (<Year>)/`.
+    /// A single film: `<movies>/<Title> (<Year>)/`.
     Movie { year: Option<u32> },
-    /// An episode of a series: `TV Shows/<Title>/Season NN/`.
+    /// An episode of a series: `<tv>/<Title>/Season NN/`.
     TvSeries { season: Option<u32> },
-    /// A music track: `Music/<Artist>/<Album>/`.
+    /// A music track: `<music>/<Artist>/<Album>/`.
     Music {
         artist: Option<String>,
         album: Option<String>,
@@ -43,12 +43,39 @@ pub enum MediaKind {
     Other,
 }
 
+/// Caller-supplied routing hints for a single file (from transfer metadata).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OrganizeHints {
+    /// Force the media routing regardless of filename heuristics.
+    pub media: Option<MediaHint>,
+    /// Explicit subpath under the music root, e.g. `Artist/Album`. Path
+    /// traversal components are rejected; an invalid subpath is ignored.
+    pub music_path: Option<String>,
+}
+
+/// Explicit media routing requested via transfer metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaHint {
+    /// Route as a series episode even without an `SxxEyy` marker.
+    Tv,
+    /// Route as a film even when no year is present.
+    Movie,
+    /// Route into the anime tree instead of the general TV tree.
+    Anime,
+}
+
 /// Computes destinations under the library root for a given source file.
 #[derive(Debug, Clone)]
 pub struct Organizer {
     pub library_root: PathBuf,
     /// Category → subfolder name under the library root.
     pub category_folders: HashMap<Category, String>,
+    /// Subfolder for series episodes (default `TV Shows`).
+    pub tv_folder: String,
+    /// Subfolder for films (default `Movies`).
+    pub movies_folder: String,
+    /// Subfolder for anime; when `None`, anime episodes go to [`Self::tv_folder`].
+    pub anime_folder: Option<String>,
 }
 
 impl Organizer {
@@ -65,7 +92,28 @@ impl Organizer {
         Self {
             library_root,
             category_folders,
+            tv_folder: "TV Shows".to_string(),
+            movies_folder: "Movies".to_string(),
+            anime_folder: None,
         }
+    }
+
+    /// Override the subfolder used for series episodes.
+    pub fn with_tv_folder(mut self, folder: impl Into<String>) -> Self {
+        self.tv_folder = folder.into();
+        self
+    }
+
+    /// Override the subfolder used for films.
+    pub fn with_movies_folder(mut self, folder: impl Into<String>) -> Self {
+        self.movies_folder = folder.into();
+        self
+    }
+
+    /// Route anime into its own subfolder (falls back to the TV folder).
+    pub fn with_anime_folder(mut self, folder: Option<String>) -> Self {
+        self.anime_folder = folder;
+        self
     }
 
     /// The subfolder name for a category.
@@ -78,22 +126,76 @@ impl Organizer {
 
     /// Compute the destination directory (without moving anything) for `src`.
     pub fn destination_for(&self, src: &Path, category: Category) -> PathBuf {
+        self.destination_for_with_hints(src, category, &OrganizeHints::default())
+    }
+
+    /// Compute the destination directory, honoring caller routing hints.
+    pub fn destination_for_with_hints(
+        &self,
+        src: &Path,
+        category: Category,
+        hints: &OrganizeHints,
+    ) -> PathBuf {
         let media_kind = media_kind_for(src);
-        match (category, media_kind) {
-            (Category::Video, MediaKind::TvSeries { season }) => {
-                let title = title_from_path(src).unwrap_or_else(|| "Unknown Series".to_string());
-                let base = self.library_root.join("TV Shows");
-                match season {
-                    Some(n) => base.join(title).join(format!("Season {n:02}")),
-                    None => base.join(title),
-                }
+
+        // An explicit music subpath wins over artist/album parsing for every
+        // audio file.
+        if category == Category::Audio {
+            if let Some(sub) = hints.music_path.as_deref().and_then(sanitize_rel_subpath) {
+                return self
+                    .library_root
+                    .join(self.category_folder(category))
+                    .join(sub);
             }
-            (Category::Video, MediaKind::Movie { year }) => {
-                let title = title_from_path(src).unwrap_or_else(|| "Unknown Title".to_string());
-                let base = self.library_root.join(self.category_folder(category));
-                match year {
-                    Some(y) => base.join(format!("{title} ({y})")),
-                    None => base.join(title),
+        }
+
+        match (category, media_kind) {
+            (Category::Video, media_kind) => {
+                // Routing priority: explicit hint > anime heuristic > year
+                // heuristic. An explicit `Tv` hint wins over a detected year
+                // so "Movie.2019.S01E01"-style names still route to series.
+                let anime = hints.media == Some(MediaHint::Anime)
+                    || (hints.media.is_none() && looks_like_anime(src));
+                let movie = hints.media == Some(MediaHint::Movie)
+                    || (hints.media.is_none()
+                        && !anime
+                        && matches!(media_kind, MediaKind::Movie { .. }));
+                let title = if anime {
+                    anime_title_from_path(src).unwrap_or_else(|| "Unknown Title".to_string())
+                } else {
+                    title_from_path(src).unwrap_or_else(|| "Unknown Title".to_string())
+                };
+                if movie {
+                    let year = match media_kind {
+                        MediaKind::Movie { year } => year,
+                        _ => None,
+                    };
+                    let base = self.library_root.join(&self.movies_folder);
+                    match year {
+                        Some(y) => base.join(format!("{title} ({y})")),
+                        None => base.join(title),
+                    }
+                } else {
+                    let season = match media_kind {
+                        MediaKind::TvSeries { season } => season,
+                        _ => None,
+                    };
+                    let year = match media_kind {
+                        MediaKind::Movie { year } => year,
+                        _ => None,
+                    };
+                    let base = if anime {
+                        self.library_root
+                            .join(self.anime_folder.as_deref().unwrap_or(&self.tv_folder))
+                    } else {
+                        self.library_root.join(&self.tv_folder)
+                    };
+                    match (season, year) {
+                        (Some(n), _) => base.join(title).join(format!("Season {n:02}")),
+                        // An anime film keeps the Plex `<Title> (<Year>)` form.
+                        (None, Some(y)) => base.join(format!("{title} ({y})")),
+                        (None, None) => base.join(title),
+                    }
                 }
             }
             (Category::Audio, MediaKind::Music { artist, album }) => {
@@ -109,7 +211,9 @@ impl Organizer {
             // land it directly in its album folder (mirroring its parent
             // directory) instead of deriving an extra filename subfolder.
             (Category::Audio, MediaKind::Other) => {
-                let base = self.library_root.join(self.category_folder(Category::Audio));
+                let base = self
+                    .library_root
+                    .join(self.category_folder(Category::Audio));
                 match src
                     .parent()
                     .and_then(|p| p.file_name())
@@ -130,15 +234,27 @@ impl Organizer {
         self.organize_into(src, category)
     }
 
+    /// Classify, honor routing hints, and MOVE `src` into the library tree.
+    pub fn organize_with_hints(&self, src: &Path, hints: &OrganizeHints) -> Result<PathBuf, Error> {
+        let category = crate::classify::classify(src);
+        let destination_dir = self.destination_for_with_hints(src, category, hints);
+        self.move_into(src, destination_dir)
+    }
+
     /// Move `src` into the library tree under the given category.
     pub fn organize_into(&self, src: &Path, category: Category) -> Result<PathBuf, Error> {
+        let destination_dir = self.destination_for(src, category);
+        self.move_into(src, destination_dir)
+    }
+
+    /// Move `src` into the precomputed destination directory.
+    fn move_into(&self, src: &Path, destination_dir: PathBuf) -> Result<PathBuf, Error> {
         if !src.is_file() {
             return Err(Error::Internal(format!(
                 "organize: not a file: {}",
                 src.display()
             )));
         }
-        let destination_dir = self.destination_for(src, category);
         std::fs::create_dir_all(&destination_dir)
             .map_err(|e| Error::Internal(format!("organize: mkdir: {e}")))?;
         let file_name = src
@@ -254,6 +370,134 @@ pub fn title_from_path(path: &Path) -> Option<String> {
     } else {
         Some(cleaned)
     }
+}
+
+/// Fansub-aware title for anime releases:
+/// `[Group] Title - 01 [1080p]` → `Title`, `[Judas] Show (Season 02)` → `Show`.
+/// Strips leading bracketed group tags, cuts at `- NN` episode markers, and
+/// drops a trailing `Season NN` phrase. Falls back to [`title_from_path`] for
+/// anything it cannot confidently clean.
+fn anime_title_from_path(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let mut rest = stem.trim();
+    while rest.starts_with('[') {
+        let close = rest.find(']')?;
+        rest = rest[close + 1..]
+            .trim_start()
+            .trim_start_matches(['-', '_', ' '])
+            .trim_start();
+    }
+    if rest.is_empty() {
+        return None;
+    }
+    let mut title = rest.to_string();
+    if let Some(idx) = index_after_dash_episode(&title) {
+        title.truncate(idx);
+        title = title.trim_end().to_string();
+    }
+    if let Some(idx) = index_of_sxxexx(&title) {
+        title.truncate(idx);
+        title = title.trim_end().to_string();
+    }
+    if let Some(idx) = index_of_season_phrase(&title) {
+        title.truncate(idx);
+        title = title.trim_end().to_string();
+    }
+    if let Some(idx) = index_of_year(&title) {
+        title.truncate(idx);
+        title = title.trim_end().to_string();
+    }
+    if title.trim().is_empty() {
+        return None;
+    }
+    let cleaned = clean_title(&title);
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// Byte index of a standalone `(19|20)xx` year token, if any.
+fn index_of_year(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i + 3 < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            if let Ok(year) = text[i..i + 4].parse::<u32>() {
+                if (1900..=2100).contains(&year) {
+                    return Some(i);
+                }
+            }
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Byte index of a ` - NN ` episode marker (the dash), if any.
+fn index_after_dash_episode(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    for i in 0..bytes.len() {
+        if bytes[i] != b'-' || i + 1 >= bytes.len() {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+            j += 1;
+        }
+        let digit_start = j;
+        while j < bytes.len() && bytes[j].is_ascii_digit() && j - digit_start < 3 {
+            j += 1;
+        }
+        if j > digit_start {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Byte index of a standalone `SxxExx` season/episode marker, if any.
+fn index_of_sxxexx(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i + 5 < bytes.len() {
+        let starts_token = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+        if starts_token
+            && bytes[i].eq_ignore_ascii_case(&b'S')
+            && bytes[i + 1].is_ascii_digit()
+            && bytes[i + 2].is_ascii_digit()
+            && bytes[i + 3].eq_ignore_ascii_case(&b'E')
+            && bytes[i + 4].is_ascii_digit()
+            && bytes[i + 5].is_ascii_digit()
+        {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Byte index of a `Season NN` phrase (any bracket/space style).
+fn index_of_season_phrase(text: &str) -> Option<usize> {
+    let lower = text.to_lowercase();
+    let bytes = lower.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = lower[from..].find("season") {
+        let idx = from + rel;
+        let mut j = idx + 6;
+        while j < bytes.len() && !bytes[j].is_ascii_digit() && (bytes[j] as char).is_whitespace() {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j].is_ascii_digit() {
+            return Some(idx);
+        }
+        from = idx + 6;
+    }
+    let _ = bytes;
+    None
 }
 
 /// `S01E01` / `S1E05` / `S.01.E.02` markers (dots/spaces ignored).
@@ -398,6 +642,64 @@ fn parse_music(path: &Path) -> Option<(String, String)> {
     None
 }
 
+/// Conservative anime release detection: fansub-style releases name files
+/// `[Group] Title - 01 [1080p].mkv`. Require BOTH a leading bracketed group
+/// tag and an episode marker (`- NN`, `EP NN`, or `SxxEyy`) so ordinary scene
+/// releases are never misrouted. Explicit hints always win over this.
+pub fn looks_like_anime(src: &Path) -> bool {
+    let Some(name) = src.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let trimmed = name.trim_start();
+    if !trimmed.starts_with('[') {
+        return false;
+    }
+    let Some(close) = trimmed.find(']') else {
+        return false;
+    };
+    if close == 1 || close > 40 {
+        return false;
+    }
+    if find_season(name).is_some() || season_folder_hint(&name.replace('\\', "/")).is_some() {
+        return true;
+    }
+    // `- 01` / `- 01v2` episode numbering after the group tag.
+    let rest = &trimmed[close + 1..];
+    for part in rest.split(" - ").skip(1) {
+        let digits: String = part
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if !digits.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Sanitize a caller-supplied relative subpath (`Artist/Album`). Rejects
+/// traversal (`..`), drive/root components, and empty results. The final
+/// containment check in [`Organizer::organize_into`] remains the hard guard.
+fn sanitize_rel_subpath(raw: &str) -> Option<PathBuf> {
+    let mut out = PathBuf::new();
+    for comp in raw.split(['/', '\\']) {
+        let c = comp.trim();
+        if c.is_empty() || c == "." {
+            continue;
+        }
+        if c == ".." || c.contains(':') || c.starts_with('/') || c.starts_with('\\') {
+            return None;
+        }
+        out.push(c);
+    }
+    if out.as_os_str().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 /// Release tags dropped when cleaning a title.
 const TAGS: &[&str] = &[
     "1080P", "720P", "2160P", "4K", "X264", "X265", "H264", "H265", "BLURAY", "WEBRIP", "WEB-DL",
@@ -510,12 +812,115 @@ mod tests {
         let organizer = Organizer::new(PathBuf::from("E:\\Media"));
         // No "Artist - Album - NN - Track" pattern: a lone track should land in
         // a folder mirroring its parent directory, not a filename subfolder.
-        let src =
-            Path::new("E:/Media/Music/Soulseek/user/Some/Album/5-08 Rythm Of The Night.mp3");
+        let src = Path::new("E:/Media/Music/Soulseek/user/Some/Album/5-08 Rythm Of The Night.mp3");
         let dst = organizer.destination_for(src, Category::Audio);
+        assert_eq!(dst, PathBuf::from("E:\\Media\\Music\\Album"));
+    }
+
+    #[test]
+    fn folder_overrides_apply() {
+        let organizer = Organizer::new(PathBuf::from("E:\\Media")).with_tv_folder("Shows");
+        let show = Path::new("Game.of.Thrones.S01E01.mkv");
         assert_eq!(
-            dst,
-            PathBuf::from("E:\\Media\\Music\\Album")
+            organizer.destination_for(show, Category::Video),
+            PathBuf::from("E:\\Media\\Shows\\Game of Thrones\\Season 01")
+        );
+    }
+
+    #[test]
+    fn anime_heuristic_routes_to_anime_folder() {
+        let organizer = Organizer::new(PathBuf::from("E:\\Media"))
+            .with_tv_folder("Shows")
+            .with_anime_folder(Some("Anime".to_string()));
+        let ep = Path::new("[SubsPlease] Some Anime - 01 (1080p) [AAC].mkv");
+        assert!(looks_like_anime(ep));
+        assert_eq!(
+            organizer.destination_for(ep, Category::Video),
+            PathBuf::from("E:\\Media\\Anime\\Some Anime")
+        );
+    }
+
+    #[test]
+    fn scene_release_is_not_anime() {
+        assert!(!looks_like_anime(Path::new(
+            "Frieren.S02E10.1080p.CR.WEB-DL.mkv"
+        )));
+    }
+
+    #[test]
+    fn anime_hint_wins_over_year_and_folder_fallback() {
+        let with_anime =
+            Organizer::new(PathBuf::from("E:\\Media")).with_anime_folder(Some("Anime".to_string()));
+        let hinted = Path::new("Anime.Movie.2019.1080p.BluRay.mkv");
+        let hints = OrganizeHints {
+            media: Some(MediaHint::Anime),
+            ..Default::default()
+        };
+        assert_eq!(
+            with_anime.destination_for_with_hints(hinted, Category::Video, &hints),
+            PathBuf::from("E:\\Media\\Anime\\Anime Movie (2019)")
+        );
+        // Without a configured anime folder it falls back to the TV folder.
+        let plain = Organizer::new(PathBuf::from("E:\\Media"));
+        assert_eq!(
+            plain.destination_for_with_hints(hinted, Category::Video, &hints),
+            PathBuf::from("E:\\Media\\TV Shows\\Anime Movie (2019)")
+        );
+    }
+
+    #[test]
+    fn tv_hint_beats_movie_year_detection() {
+        let organizer = Organizer::new(PathBuf::from("E:\\Media"));
+        let odd = Path::new("Movie.The.Game.2019.S01E01.mkv");
+        let hints = OrganizeHints {
+            media: Some(MediaHint::Tv),
+            ..Default::default()
+        };
+        assert_eq!(
+            organizer.destination_for_with_hints(odd, Category::Video, &hints),
+            PathBuf::from("E:\\Media\\TV Shows\\Movie The Game 2019\\Season 01")
+        );
+    }
+
+    #[test]
+    fn music_path_hint_routes_under_music_root() {
+        let organizer = Organizer::new(PathBuf::from("E:\\Media"));
+        let hints = OrganizeHints {
+            music_path: Some("Daft Punk/Discovery".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            organizer.destination_for_with_hints(Path::new("track.mp3"), Category::Audio, &hints),
+            PathBuf::from("E:\\Media\\Music\\Daft Punk\\Discovery")
+        );
+    }
+
+    #[test]
+    fn music_path_traversal_is_rejected_and_falls_back() {
+        let organizer = Organizer::new(PathBuf::from("E:\\Media"));
+        let bad = OrganizeHints {
+            music_path: Some("../../Outside".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            organizer.destination_for_with_hints(
+                Path::new("Artist - Album - 01 Song.flac"),
+                Category::Audio,
+                &bad
+            ),
+            PathBuf::from("E:\\Media\\Music\\Artist\\Album")
+        );
+        let drive = OrganizeHints {
+            music_path: Some("C:/Windows/Temp".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            organizer.destination_for_with_hints(
+                Path::new("Artist - Album - 01 Song.flac"),
+                Category::Audio,
+                &drive
+            ),
+            PathBuf::from("E:\\Media\\Music\\Artist\\Album")
         );
     }
 

@@ -94,6 +94,32 @@ Recognized formats:
 
 ## Media organization
 
+Completed files are moved under the configured `library_root` in a
+Jellyfin/Plex-friendly tree:
+
+```text
+<root>/<movies_dir>/<Title> (<Year>)/<file>
+<root>/<tv_dir>/<Title>/Season NN/<file>
+<root>/<anime_dir or tv_dir>/<Title>/Season NN/<file>   (anime)
+<root>/Music/<Artist>/<Album>/<file>
+```
+
+- Folder names are configurable in `[postprocess]`: `tv_dir` (default
+  `TV Shows`), `movies_dir` (default `Movies`), and `anime_dir` (unset means
+  anime shares the TV folder).
+- Routing priority for video: explicit per-transfer hint > conservative
+  fansub-style anime heuristic (`[Group] Title - 01 [1080p]`) > filename
+  year/season heuristics.
+- Per-transfer hints ride on transfer metadata under a namespaced
+  `"postprocess"` key, set at `add_transfer` time:
+
+  ```json
+  {"postprocess": {"media": "tv|movie|anime", "music_path": "Artist/Album"}}
+  ```
+
+  `music_path` places an audio download at an exact subfolder under
+  `<root>/Music` and wins over artist/album filename parsing. Traversal
+  (`..`, drive components) is rejected and falls back to default routing.
 - Organization is configurable and conservative.
 - Files are renamed/moved only within configured library roots; nothing is
   silently moved or renamed outside them.

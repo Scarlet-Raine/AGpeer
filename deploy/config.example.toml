@@ -1,0 +1,69 @@
+# agpeer local runtime configuration template.
+#
+# Copy this to your data/config location and fill in your Soulseek
+# credentials. All values here are bootstrap defaults; AGPEER_* environment
+# variables overlay them per-run (see README.md "Environment variables").
+data_dir = '/var/lib/agpeer'
+search_result_ttl_hours = 24
+
+[server]
+host = "127.0.0.1"
+port = 41000
+
+[torrent]
+enabled = true
+engine = "rqbit"
+# Downloads stage here, then get organized into the library root below. It
+# must be on the SAME drive as library_root so the post-process move is an
+# instant same-volume rename (no cross-drive copy needed).
+download_root = '/opt/agpeer/downloads'
+listen_port = 51234
+enable_dht = true
+enable_pex = true
+enable_lsd = true
+enable_tracker = true
+
+[soulseek]
+enabled = true
+# Soulseek server address (default vps.slsknet.org:2242) and local listen
+# port for peer/file connections (default 2234). Each can be overridden via
+# AGPEER_SOULSEEK_SERVER_ADDR and AGPEER_SOULSEEK_LISTEN_PORT.
+server_addr = "vps.slsknet.org:2242"
+listen_port = 2234
+username = "your_soulseek_username"
+password = "your_soulseek_password"
+download_root = '/opt/agpeer/soulseek-downloads'
+
+[hook_search]
+# Built-in magnet search, on by default once enabled=true (see the runtime
+# toggle in Settings). With no `command` the backend queries generic search
+# engines scoped to `domains` plus any `sites` templates below.
+enabled = true
+# External override (optional): a scraper script that prints magnets. Empty =
+# built-in search. `{query}` is replaced with the search term; `{domains}`
+# with the comma-joined domain list (both appended as trailing args when not
+# referenced). No shell is used.
+command = []
+# Domains the built-in engine search restricts itself to
+# (`site:<domain> <query> magnet:?xt=urn:btih:`). A user's own indexer domains
+# go here; no site is compiled into the binary.
+domains = ["example-index-1.example"]
+# Optional per-site templates for the built-in search (`extract` is one of
+# "table" | "detail" | "regex"):
+#   table  -> the result page contains direct magnet: links
+#   detail -> follow up to max_pages result links, take each page's first magnet
+#   regex  -> apply `pattern` (capture group 1 or the whole match is the magnet)
+#sites = [
+#  { domain = "example-index-1", search = "https://example-index-1.example/?f=0&q={query}", extract = "table" },
+#  { domain = "example-index-2", search = "https://example-index-2.example/browse?q={query}", extract = "detail", max_pages = 5 },
+#  { domain = "example-index-3", search = "https://example-index-3.example/search/{query}", extract = "regex", pattern = "magnet:\\?xt=urn:btih:[a-f0-9]{40}" },
+#]
+timeout_secs = 30
+max_results = 100
+
+[postprocess]
+# Completed downloads are organized into this library root under a
+# Jellyfin/Plex friendly tree: <root>/Movies/<Title> (<Year>)/,
+# <root>/TV Shows/<Title>/Season NN/, <root>/Music/<Artist>/<Album>/, ...
+library_root = '/opt/agpeer/library'
+auto_organize = true

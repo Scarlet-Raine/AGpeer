@@ -662,13 +662,21 @@ pub async fn list_library(
 
 /// Router for the agpeer API.
 ///
-/// A permissive CORS layer is applied so the local desktop/web UI (e.g. Vite
-/// on `127.0.0.1:5173`, or the Tauri shell) can call the API cross-origin.
-/// This is safe in practice because every route still requires the bearer
-/// token and the listener binds to loopback by default.
+/// A permissive CORS layer is applied **only to the `/api/v1` surface** so the
+/// local desktop/web UI (e.g. Vite on `127.0.0.1:5173`, or the Tauri shell)
+/// can call the API cross-origin. This is safe because every API route still
+/// requires the bearer token. The webui routes added afterwards (SPA, and the
+/// unauthenticated loopback-only token bootstrap) are deliberately kept
+/// same-origin: a page from any web origin must never be able to read the
+/// bearer token.
+///
+/// With the `webui` feature, the embedded Desktop UI is served from `GET /`
+/// (SPA with API JSON 404 fallbacks) and the loopback-only token bootstrap
+/// endpoint is added.
 pub fn router(state: Arc<AppState>) -> axum::Router {
     let cors = tower_http::cors::CorsLayer::permissive();
-    Router::new()
+    // Api routes first: the CORS layer is applied to this router only.
+    let api = Router::new()
         .route("/api/v1/status", get(status))
         .route("/api/v1/backends", get(backends))
         .route("/api/v1/events", get(events))
@@ -701,8 +709,23 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
             utoipa_swagger_ui::SwaggerUi::new("/api/v1/docs")
                 .url("/api/v1/docs/openapi.json", ApiDoc::openapi()),
         )
-        .layer(cors)
-        .with_state(state)
+        .layer(cors);
+
+    // Webui routes are added AFTER `.layer(cors)` so the permissive CORS
+    // (in axum, layers only wrap routes present when `.layer` is called) can
+    // never expose the unauthenticated token bootstrap to cross-origin pages.
+    #[cfg_attr(not(feature = "webui"), allow(unused_mut))]
+    let mut app = api;
+    #[cfg(feature = "webui")]
+    {
+        use axum::routing::get as webui_get;
+        app = app
+            .route("/", webui_get(crate::webui::index))
+            .route("/__agpeer_token", webui_get(crate::webui::token))
+            .fallback(crate::webui::spa_fallback);
+    }
+
+    app.with_state(state)
 }
 
 #[derive(utoipa::OpenApi)]

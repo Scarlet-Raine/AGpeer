@@ -254,11 +254,15 @@ export default function MagnetSearch() {
 
       <div className="card">
         <h2>Magnet search</h2>
-        <p className="muted">Runs your configured magnet-search hook against the query. Downloading a result adds it as a torrent transfer.</p>
+        <p className="muted">
+          Runs the built-in magnet search (generic engines scoped to your
+          configured domains, plus optional site templates) against the query.
+          Downloading a result adds it as a torrent transfer.
+        </p>
         {hookState === "unconfigured" && (
           <div className="muted" style={{ color: "var(--danger)" }}>
-            Magnet search is not configured. Add a <code>[hook_search]</code> section with a{" "}
-            <code>command</code> to your <code>agpeer.toml</code>, then restart the core.
+            Magnet search is not available. The hook backend is not registered;
+            restart the core.
           </div>
         )}
         {hookState === "disabled" && (

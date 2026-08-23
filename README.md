@@ -22,8 +22,15 @@ content.
   restart/resume persistence.
 - **Soulseek** — search with incremental results, file and folder
   downloads, queue position and progress — via the native `rustsoseek` client.
+- **Built-in magnet search** — generic engine search scoped to your configured
+  domains plus optional per-site templates; fully domain-neutral, zero
+  external files. A user script can override it.
 - **One normalized job model** — transfers from every backend normalize into a
   single typed model with opaque application-owned IDs.
+- **One binary** — the Desktop UI can be embedded into the core binary
+  (`--features webui`) and served from `GET /`: one process, one port, no
+  Vite/Tauri needed. Runs as a Windows service (NSSM), systemd, or a
+  Docker container.
 - **Post-processing** — rule-driven pipeline (classify, verify, extract,
   inspect, organize) with safe archive extraction and explicit installer
   execution policy.
@@ -44,12 +51,15 @@ Rust-first architecture:
 | Soulseek engine | `rustsoseek` native client, clean-room wire protocol |
 | HTTP API | Axum, versioned `/api/v1`, bearer token required |
 | Realtime events | Server-Sent Events (`/api/v1/events`) |
+| Magnet search | `crates/hook` — built-in engine/site-template search (no compiled sites) or user-script override |
 | Persistence | SQLite (`sqlx`), source of truth for application state |
-| Desktop shell | Tauri 2 + React + TypeScript + Vite |
+| Desktop UI | React + TypeScript + Vite; optional Tauri shell or embedded into the core binary (`webui` feature) |
 | Agent interface | REST first (`/api/v1`); MCP server (`agpeer-mcp`) over it |
 
 The core service runs as a single binary (`agpeer`). The Tauri shell spawns it
-as a child process; the core also runs standalone for API-only use. See
+as a child process; the core also runs standalone for API-only use. With the
+`webui` build feature the core *is* the whole app: one process serves the API
+and the UI. See
 [docs/architecture.md](docs/architecture.md) for details.
 
 ## Repository layout
@@ -123,6 +133,41 @@ By default the core listens on `127.0.0.1:41000`. On first boot it generates a
 bearer token, persists it in the private data directory, and prints the
 location — the token value itself is never written to logs. The Tauri shell
 reads the token automatically; agents can read it from the same file.
+
+### One-binary build (embedded WebUI)
+
+Ship the whole product as a single executable — core + magnet search + UI:
+
+```bash
+# 1. Build the desktop UI once
+cd apps/desktop
+npm ci
+npm run build
+cd ../..
+
+# 2. Build the core with the UI embedded
+cargo build --release --features webui --bin agpeer
+# target/release/agpeer.exe — start it, open http://127.0.0.1:41000
+```
+
+The browser UI bootstraps the bearer token from the loopback-only
+`GET /__agpeer_token`. Environment overrides (`AGPEER_HOST`, `AGPEER_PORT`,
+`AGPEER_DATA_DIR`, `AGPEER_CONFIG`, `AGPEER_SOULSEEK_*`) make headless
+deployments work without editing a TOML. Service recipes and a config example
+live in [`deploy/`](deploy/): `service-install.ps1` (NSSM/Windows),
+`systemd/agpeer.service` (Linux), plus [`docker-compose.example`](docker-compose.example)
+and the [`Dockerfile`](Dockerfile).
+
+### Environment variables
+
+| Variable | Meaning |
+|---|---|
+| `AGPEER_CONFIG` | Path to the TOML config (defaults to the per-user config dir). |
+| `AGPEER_HOST` / `AGPEER_PORT` | Bind address for the HTTP server (default `127.0.0.1:41000`). |
+| `AGPEER_DATA_DIR` | Data directory (DB, token, logs). |
+| `AGPEER_SOULSEEK_SERVER_ADDR` / `AGPEER_SOULSEEK_LISTEN_PORT` / `AGPEER_SOULSEEK_USERNAME` / `AGPEER_SOULSEEK_PASSWORD` | Soulseek bootstrap. |
+| `AGPEER_LOG_FILE_FILTER` | File-log verbosity (default `debug`). |
+| `AGPEER_UI_TOKEN_INJECT` | `1` = embed the API token into the served page (container/LAN UI bootstrap; widening exposure — see [security.md](docs/security.md)). |
 
 ### Run the desktop app
 

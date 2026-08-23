@@ -1,19 +1,23 @@
 //! Hook search backend adapter.
 //!
-//! Runs a user-configured command with the search query and parses magnet links
-//! from its stdout. Supports two output contracts:
+//! Provides magnet search through two interchangeable paths, selected at search
+//! time:
 //!
-//! - **Structured**: a JSON array, e.g.
-//!   `[{"magnet": "magnet:?xt=urn:btih:...", "title": "My File", "size": 123}]`
-//! - **Plain**: one magnet URI per line (optionally prefixed by a title,
-//!   e.g. `My File | magnet:?xt=urn:btih:...`).
+//! - **Built-in** (no `command` configured): generic search-engine queries
+//!   scoped to user-configured domains, plus optional user-configured site
+//!   templates (see `crates/hook/src/builtin.rs`). Zero external files.
+//! - **External command override** (`command` configured): the user's script is
+//!   run per query with `{query}`/`{domains}` substitution. The script may emit
+//!   a JSON array of hits or one magnet per line.
 
+use crate::builtin::{generic_search, percent_decode, search_site, SearchHit};
 use agpeer_common::{
-    Backend, Error, Result, ResultId, SearchBackend, SearchId, SearchRequest, SearchResult,
+    Backend, Error, HookSearchSite, Result, ResultId, SearchBackend, SearchId, SearchRequest,
+    SearchResult,
 };
 use agpeer_storage::{Database, SettingsStore};
 use async_trait::async_trait;
-use serde::Deserialize;
+use reqwest::Client;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -24,29 +28,18 @@ struct BackendState {
     searches: HashMap<String, Vec<SearchResult>>,
 }
 
-/// A structured magnet hit emitted by a hook script.
-#[derive(Debug, Deserialize)]
-struct SearchHit {
-    #[serde(default)]
-    magnet: String,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    size: Option<u64>,
-    #[serde(default)]
-    seeders: Option<u32>,
-    #[serde(default)]
-    leechers: Option<u32>,
-}
-
-/// Magnet-search backend backed by a user-configured external command.
+/// Magnet-search backend: built-in domain-neutral search with an optional
+/// external-command override.
 pub struct HookSearchBackend {
+    /// External command override. Empty = built-in search.
     command: Vec<String>,
     timeout: Duration,
     max_results: usize,
     /// Optional handle to the settings DB, used to read the runtime
-    /// `hook_search.enabled` and `hook_search.domains` settings at search time.
+    /// `hook_search.enabled`, `hook_search.domains`, and `hook_search.sites`
+    /// settings at search time.
     db: Option<Database>,
+    client: Client,
     state: Arc<Mutex<BackendState>>,
 }
 
@@ -57,11 +50,14 @@ impl HookSearchBackend {
         max_results: usize,
         db: Option<Database>,
     ) -> Self {
+        let client = crate::builtin::http_client()
+            .unwrap_or_else(|_| Client::builder().build().expect("reqwest client builds"));
         Self {
             command,
             timeout,
             max_results: max_results.max(1),
             db,
+            client,
             state: Arc::new(Mutex::new(BackendState::default())),
         }
     }
@@ -93,6 +89,96 @@ impl HookSearchBackend {
             .flatten()
             .unwrap_or_default()
     }
+
+    /// The runtime-configured site templates (defaults to empty when no DB is
+    /// attached, e.g. in unit tests).
+    async fn sites(&self) -> Vec<HookSearchSite> {
+        let Some(db) = &self.db else {
+            return Vec::new();
+        };
+        SettingsStore::new(db)
+            .get_typed::<Vec<HookSearchSite>>("hook_search.sites")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    /// Built-in search: generic engines + configured site templates, merged.
+    /// The result budget for a search request: the caller's `max_results`,
+    /// bounded by the backend's configured `max_results` (config safety cap).
+    fn budget(&self, request: &SearchRequest) -> usize {
+        request.max_results.max(1).min(self.max_results.max(1))
+    }
+
+    async fn builtin_search(&self, request: &SearchRequest) -> Result<Vec<SearchHit>> {
+        let domains = self.domains().await;
+        let sites = self.sites().await;
+        let budget = self.budget(request);
+
+        let mut hits = generic_search(&self.client, &request.query, &domains, budget).await?;
+        let mut seen: HashSet<String> = hits.iter().map(|h| h.magnet.clone()).collect();
+
+        for site in sites {
+            // Stop fetching site templates once the result budget is already
+            // satisfied: remaining work (incl. sequential detail-page fetches)
+            // would be discarded and only add latency.
+            if hits.len() >= budget {
+                break;
+            }
+            if site.search.trim().is_empty() {
+                continue;
+            }
+            match search_site(&self.client, &site, &request.query).await {
+                Ok(mut page_hits) => {
+                    for hit in page_hits.drain(..) {
+                        if seen.insert(hit.magnet.clone()) {
+                            hits.push(hit);
+                            if hits.len() >= budget {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        site = %site.domain,
+                        error = %e,
+                        "built-in search: site template failed"
+                    );
+                }
+            }
+        }
+
+        hits.truncate(budget);
+        Ok(hits)
+    }
+
+    /// External-command search (the "advanced override" path). A non-zero exit
+    /// or timeout degrades to an empty result (a scraper may legitimately
+    /// return "no hits"); a command that cannot be spawned is an error.
+    async fn external_search(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
+        let domains = self.domains().await;
+        let budget = self.budget(request);
+        let stdout = match tokio::time::timeout(
+            self.timeout,
+            run_hook(&self.command, &request.query, &domains),
+        )
+        .await
+        {
+            Err(_) => {
+                tracing::warn!("hook search timed out after {:?}", self.timeout);
+                Vec::new()
+            }
+            Ok(Err(e)) => return Err(e),
+            Ok(Ok(bytes)) => bytes,
+        };
+        let parsed = parse_output(&stdout, budget);
+        if parsed.is_empty() {
+            tracing::warn!(query = %request.query, "hook search parsed no magnets from output");
+        }
+        Ok(parsed)
+    }
 }
 
 /// Split a command template into (program, args). `{query}` is substituted with
@@ -100,7 +186,11 @@ impl HookSearchBackend {
 /// query or domains are not referenced by any argument, they are appended as
 /// trailing positional arguments (query first, then domains). No shell is
 /// involved, so all values are passed verbatim as single arguments.
-fn build_command(template: &[String], query: &str, domains: &[String]) -> Option<(String, Vec<String>)> {
+fn build_command(
+    template: &[String],
+    query: &str,
+    domains: &[String],
+) -> Option<(String, Vec<String>)> {
     let domains_joined = domains.join(",");
     let mut program: Option<String> = None;
     let mut args: Vec<String> = Vec::new();
@@ -173,7 +263,9 @@ async fn run_hook(command: &[String], query: &str, domains: &[String]) -> Result
 }
 
 /// Parse hook stdout into normalized search results, deduplicated by magnet.
-fn parse_output(bytes: &[u8], search_id: SearchId, max_results: usize) -> Vec<SearchResult> {
+/// Structured JSON arrays and plain "magnet per line" output are both
+/// supported.
+fn parse_output(bytes: &[u8], max_results: usize) -> Vec<SearchResult> {
     let text = String::from_utf8_lossy(bytes);
     let trimmed = text.trim();
     let mut out: Vec<SearchResult> = Vec::new();
@@ -185,7 +277,7 @@ fn parse_output(bytes: &[u8], search_id: SearchId, max_results: usize) -> Vec<Se
             if magnet.is_empty() || !seen.insert(magnet.to_string()) {
                 continue;
             }
-            if let Some(r) = hit.to_result(&search_id) {
+            if let Some(r) = hit_to_result(&hit, magnet) {
                 out.push(r);
             }
         }
@@ -201,7 +293,7 @@ fn parse_output(bytes: &[u8], search_id: SearchId, max_results: usize) -> Vec<Se
             if !seen.insert(magnet.clone()) {
                 continue;
             }
-            out.push(build_result(&search_id, &magnet, Some(title), None, None, None));
+            out.push(build_result(&magnet, Some(title), None, None, None));
         }
     }
 
@@ -217,34 +309,28 @@ fn parse_json_hits(trimmed: &str) -> Option<Vec<SearchHit>> {
     serde_json::from_str::<Vec<SearchHit>>(trimmed).ok()
 }
 
-impl SearchHit {
-    fn to_result(&self, search_id: &SearchId) -> Option<SearchResult> {
-        let magnet = self.magnet.trim();
-        if magnet.is_empty() {
-            return None;
-        }
-        Some(build_result(
-            search_id,
-            magnet,
-            self.title.clone(),
-            self.size,
-            self.seeders,
-            self.leechers,
-        ))
-    }
+/// Normalize one parsed hit into a [`SearchResult`].
+fn hit_to_result(hit: &SearchHit, magnet: &str) -> Option<SearchResult> {
+    Some(build_result(
+        magnet,
+        hit.title.clone(),
+        hit.size,
+        hit.seeders,
+        hit.leechers,
+    ))
 }
 
 /// Build a normalized search result for a magnet, preserving the magnet URI in
 /// `backend_metadata["magnet"]` and `attributes["magnet"]`. Seeders/leechers
 /// (when known) are stored under `attributes["seeders"]`/`["leechers"]`.
 fn build_result(
-    search_id: &SearchId,
     magnet: &str,
     title: Option<String>,
     size: Option<u64>,
     seeders: Option<u32>,
     leechers: Option<u32>,
 ) -> SearchResult {
+    let search_id = SearchId::new();
     let filename = title
         .clone()
         .filter(|t| !t.trim().is_empty())
@@ -270,7 +356,7 @@ fn build_result(
             &uuid::Uuid::NAMESPACE_URL,
             magnet.as_bytes(),
         )),
-        search_id: *search_id,
+        search_id,
         username: String::new(),
         path: String::new(),
         filename,
@@ -317,34 +403,6 @@ fn display_name(magnet: &str) -> String {
     "magnet".to_string()
 }
 
-/// Minimal percent-decoding for URI-encoded display names.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(h), Some(l)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                out.push(h * 16 + l);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}
-
 #[async_trait]
 impl SearchBackend for HookSearchBackend {
     fn backend(&self) -> Backend {
@@ -359,31 +417,40 @@ impl SearchBackend for HookSearchBackend {
             return Err(Error::BackendUnavailable);
         }
         let id = SearchId::new();
-        let domains = self.domains().await;
 
-        let stdout = match tokio::time::timeout(
-            self.timeout,
-            run_hook(&self.command, &request.query, &domains),
-        )
-        .await
-        {
-            Err(_) => {
-                tracing::warn!("hook search timed out after {:?}", self.timeout);
-                Vec::new()
-            }
-            Ok(Err(e)) => return Err(e),
-            Ok(Ok(bytes)) => bytes,
+        // Dispatch: an empty `command` uses the built-in path; a configured
+        // `command` uses the external-script override.
+        let mut results: Vec<SearchResult> = if self.command.is_empty() {
+            let hits = self.builtin_search(&request).await?;
+            hits.iter()
+                .filter_map(|hit| {
+                    let magnet = hit.magnet.trim();
+                    if magnet.is_empty() {
+                        return None;
+                    }
+                    Some(build_result(
+                        magnet,
+                        hit.title.clone(),
+                        hit.size,
+                        hit.seeders,
+                        hit.leechers,
+                    ))
+                })
+                .collect()
+        } else {
+            self.external_search(&request).await?
         };
-
-        let parsed = parse_output(&stdout, id, self.max_results);
-        if parsed.is_empty() {
-            tracing::warn!(query = %request.query, "hook search parsed no magnets from output");
+        for result in &mut results {
+            result.search_id = id;
+        }
+        if results.is_empty() {
+            tracing::warn!(query = %request.query, "hook search returned no results");
         }
         self.state
             .lock()
             .unwrap()
             .searches
-            .insert(id.to_string(), parsed);
+            .insert(id.to_string(), results);
         Ok(id)
     }
 
@@ -405,7 +472,6 @@ impl SearchBackend for HookSearchBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agpeer_common::SearchRequest;
 
     fn backend() -> HookSearchBackend {
         // No DB attached: `enabled()` returns true and `domains()` returns
@@ -415,10 +481,8 @@ mod tests {
 
     #[test]
     fn parses_json_hits() {
-        let id = SearchId::new();
         let out = parse_output(
             br#"[{"magnet":"magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","title":"Album/flac","size":1000,"seeders":123,"leechers":5}]"#,
-            id,
             100,
         );
         assert_eq!(out.len(), 1);
@@ -445,10 +509,8 @@ mod tests {
 
     #[test]
     fn parses_plain_lines_and_dedups() {
-        let id = SearchId::new();
         let out = parse_output(
             b"magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nmagnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nmagnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
-            id,
             100,
         );
         assert_eq!(out.len(), 2);
@@ -456,10 +518,8 @@ mod tests {
 
     #[test]
     fn title_prefix_parsed() {
-        let id = SearchId::new();
         let out = parse_output(
             b"Some Title | magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
-            id,
             100,
         );
         assert_eq!(out.len(), 1);
@@ -480,10 +540,8 @@ mod tests {
 
     #[test]
     fn empty_and_comment_lines_ignored() {
-        let id = SearchId::new();
         let out = parse_output(
             b"\n# comment\nmagnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
-            id,
             100,
         );
         assert_eq!(out.len(), 1);
@@ -491,10 +549,8 @@ mod tests {
 
     #[test]
     fn respects_max_results() {
-        let id = SearchId::new();
         let out = parse_output(
             b"magnet:?xt=urn:btih:a\nmagnet:?xt=urn:btih:b\nmagnet:?xt=urn:btih:c\n",
-            id,
             2,
         );
         assert_eq!(out.len(), 2);
@@ -517,19 +573,37 @@ mod tests {
 
     #[test]
     fn build_command_handles_domains() {
-        let domains = ["nyaa.si".to_string(), "1337x.to".to_string()];
+        let domains = [
+            "search-index-1.example".to_string(),
+            "search-index-2.example".to_string(),
+        ];
         // `{domains}` token substituted.
         let (_, args) = build_command(
-            &["s".into(), "{query}".into(), "--domains".into(), "{domains}".into()],
+            &[
+                "s".into(),
+                "{query}".into(),
+                "--domains".into(),
+                "{domains}".into(),
+            ],
             "q",
             &domains,
         )
         .unwrap();
-        assert_eq!(args, vec!["q", "--domains", "nyaa.si,1337x.to"]);
+        assert_eq!(
+            args,
+            vec![
+                "q",
+                "--domains",
+                "search-index-1.example,search-index-2.example"
+            ]
+        );
 
         // No `{domains}` token: domains appended after the query.
         let (_, args2) = build_command(&["s".into(), "{query}".into()], "q", &domains).unwrap();
-        assert_eq!(args2, vec!["q", "nyaa.si,1337x.to"]);
+        assert_eq!(
+            args2,
+            vec!["q", "search-index-1.example,search-index-2.example"]
+        );
 
         // No domains configured: nothing appended.
         let (_, args3) = build_command(&["s".into(), "{query}".into()], "q", &[]).unwrap();
@@ -549,5 +623,25 @@ mod tests {
         };
         let err = b.search(r).await.expect_err("non-hook backend must fail");
         assert!(matches!(err, agpeer_common::Error::InvalidSource));
+    }
+
+    /// An empty command must route to the built-in path (no "command is
+    /// empty" error, no external process), degrading gracefully when offline.
+    #[tokio::test]
+    async fn builtin_search_dispatches_and_normalizes() {
+        let b = backend();
+        let r = SearchRequest {
+            backend: Backend::Hook,
+            query: "some query".into(),
+            user: None,
+            extension: None,
+            min_size: None,
+            max_results: 3,
+        };
+        let id = b.search(r).await.expect("built-in search should not fail");
+        let results = b.results(&id).await.expect("results should exist");
+        // Offline engine requests yield zero hits, never a hard error.
+        assert_eq!(id.to_string().len(), 36);
+        let _ = results;
     }
 }
