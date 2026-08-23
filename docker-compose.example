@@ -36,6 +36,11 @@ services:
       # AGPEER_SOULSEEK_SERVER_ADDR: vps.slsknet.org:2242
     command: serve
     volumes:
+      # The container runs as UID 65534 (nobody). Every mounted path —
+      # including this config file — must be readable/writable by that UID,
+      # e.g. `chmod 644 config.toml` and `chown -R 65534:65534 <host dirs>`.
+      # Typical Unraid appdata files are root-owned; world-readable (644) is
+      # sufficient for the config.
       - ./config.toml:/etc/agpeer.toml:ro
       # Named volumes get correct ownership automatically. If you swap any of
       # these for host paths (e.g. /mnt/user/appdata/agpeer/...), make them
