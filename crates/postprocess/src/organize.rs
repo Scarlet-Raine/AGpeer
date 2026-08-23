@@ -766,23 +766,26 @@ mod tests {
 
     #[test]
     fn destination_tree_is_jellyfin_friendly() {
-        let organizer = Organizer::new(PathBuf::from("E:\\Media"));
+        let root = PathBuf::from("E:\\Media");
+        let organizer = Organizer::new(root.clone());
         let show = Path::new("Game.of.Thrones.S01E01.Winter.is.Coming.mkv");
         let dst = organizer.destination_for(show, Category::Video);
         assert_eq!(
             dst,
-            PathBuf::from("E:\\Media\\TV Shows\\Game of Thrones\\Season 01")
+            root.join("TV Shows")
+                .join("Game of Thrones")
+                .join("Season 01")
         );
 
         let movie = Path::new("The.Matrix.1999.1080p.mkv");
         let dst = organizer.destination_for(movie, Category::Video);
-        assert_eq!(dst, PathBuf::from("E:\\Media\\Movies\\The Matrix (1999)"));
+        assert_eq!(dst, root.join("Movies").join("The Matrix (1999)"));
 
         let track = Path::new("Radiohead - OK Computer - 01 Airbag.flac");
         let dst = organizer.destination_for(track, Category::Audio);
         assert_eq!(
             dst,
-            PathBuf::from("E:\\Media\\Music\\Radiohead\\OK Computer")
+            root.join("Music").join("Radiohead").join("OK Computer")
         );
     }
 
@@ -814,7 +817,7 @@ mod tests {
         // a folder mirroring its parent directory, not a filename subfolder.
         let src = Path::new("E:/Media/Music/Soulseek/user/Some/Album/5-08 Rythm Of The Night.mp3");
         let dst = organizer.destination_for(src, Category::Audio);
-        assert_eq!(dst, PathBuf::from("E:\\Media\\Music\\Album"));
+        assert_eq!(dst, PathBuf::from("E:\\Media").join("Music").join("Album"));
     }
 
     #[test]
@@ -823,7 +826,10 @@ mod tests {
         let show = Path::new("Game.of.Thrones.S01E01.mkv");
         assert_eq!(
             organizer.destination_for(show, Category::Video),
-            PathBuf::from("E:\\Media\\Shows\\Game of Thrones\\Season 01")
+            PathBuf::from("E:\\Media")
+                .join("Shows")
+                .join("Game of Thrones")
+                .join("Season 01")
         );
     }
 
@@ -836,7 +842,7 @@ mod tests {
         assert!(looks_like_anime(ep));
         assert_eq!(
             organizer.destination_for(ep, Category::Video),
-            PathBuf::from("E:\\Media\\Anime\\Some Anime")
+            PathBuf::from("E:\\Media").join("Anime").join("Some Anime")
         );
     }
 
@@ -858,13 +864,17 @@ mod tests {
         };
         assert_eq!(
             with_anime.destination_for_with_hints(hinted, Category::Video, &hints),
-            PathBuf::from("E:\\Media\\Anime\\Anime Movie (2019)")
+            PathBuf::from("E:\\Media")
+                .join("Anime")
+                .join("Anime Movie (2019)")
         );
         // Without a configured anime folder it falls back to the TV folder.
         let plain = Organizer::new(PathBuf::from("E:\\Media"));
         assert_eq!(
             plain.destination_for_with_hints(hinted, Category::Video, &hints),
-            PathBuf::from("E:\\Media\\TV Shows\\Anime Movie (2019)")
+            PathBuf::from("E:\\Media")
+                .join("TV Shows")
+                .join("Anime Movie (2019)")
         );
     }
 
@@ -878,7 +888,10 @@ mod tests {
         };
         assert_eq!(
             organizer.destination_for_with_hints(odd, Category::Video, &hints),
-            PathBuf::from("E:\\Media\\TV Shows\\Movie The Game 2019\\Season 01")
+            PathBuf::from("E:\\Media")
+                .join("TV Shows")
+                .join("Movie The Game 2019")
+                .join("Season 01")
         );
     }
 
@@ -891,7 +904,10 @@ mod tests {
         };
         assert_eq!(
             organizer.destination_for_with_hints(Path::new("track.mp3"), Category::Audio, &hints),
-            PathBuf::from("E:\\Media\\Music\\Daft Punk\\Discovery")
+            PathBuf::from("E:\\Media")
+                .join("Music")
+                .join("Daft Punk")
+                .join("Discovery")
         );
     }
 
@@ -902,13 +918,17 @@ mod tests {
             music_path: Some("../../Outside".to_string()),
             ..Default::default()
         };
+        let expected = PathBuf::from("E:\\Media")
+            .join("Music")
+            .join("Artist")
+            .join("Album");
         assert_eq!(
             organizer.destination_for_with_hints(
                 Path::new("Artist - Album - 01 Song.flac"),
                 Category::Audio,
                 &bad
             ),
-            PathBuf::from("E:\\Media\\Music\\Artist\\Album")
+            expected
         );
         let drive = OrganizeHints {
             music_path: Some("C:/Windows/Temp".to_string()),
@@ -920,7 +940,7 @@ mod tests {
                 Category::Audio,
                 &drive
             ),
-            PathBuf::from("E:\\Media\\Music\\Artist\\Album")
+            expected
         );
     }
 
