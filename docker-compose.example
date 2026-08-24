@@ -11,7 +11,6 @@
 #   cp deploy/config.example.toml /mnt/user/appdata/agpeer/config.toml
 #   # fill in Soulseek credentials, then:
 #   chmod 644 /mnt/user/appdata/agpeer/config.toml
-#   chown -R 65534:65534 /mnt/user/appdata/agpeer/downloads /mnt/user/appdata/agpeer/library
 #
 # The WebUI + API are served from http://<host>:41000.
 
@@ -36,6 +35,11 @@ services:
       AGPEER_HOST: 0.0.0.0
       AGPEER_DATA_DIR: /data
       AGPEER_CONFIG: /etc/agpeer.toml
+      # Run the agpeer process as your user (Unraid defaults: 99/100). The
+      # entrypoint aligns ownership of /data and /opt/agpeer/* automatically —
+      # no manual chown needed. Omit these to use nobody (65534) instead.
+      PUID: 99
+      PGID: 100
       # A browser outside the container cannot reach the loopback-only
       # /__agpeer_token bootstrap, so the token is injected into the served
       # page. WIDENING-EXPOSURE SETTING: any client that can reach port 41000
@@ -47,9 +51,8 @@ services:
       # AGPEER_SOULSEEK_SERVER_ADDR: vps.slsknet.org:2242
     command: serve
     volumes:
-      # The container runs as UID 65534 (nobody). Every mounted path must be
-      # accessible to that UID: the config needs to be readable (644), the
-      # downloads/library dirs writable (chown 65534:65534).
+      # The config only needs to be readable (chmod 644). Ownership of the
+      # writable dirs below is handled by the entrypoint via PUID/PGID.
       - /mnt/user/appdata/agpeer/config.toml:/etc/agpeer.toml:ro
       # Private app state (SQLite DB, API token, logs). A named volume gets
       # correct ownership automatically — keep this one named.

@@ -22,7 +22,7 @@ RUN cargo build --release --features webui --bin agpeer
 # ---- Stage 3: slim runtime ----
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl gosu \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /src/target/release/agpeer /usr/local/bin/agpeer
 # Provision the layout the shipped example config (deploy/config.example.toml)
@@ -31,6 +31,13 @@ COPY --from=builder /src/target/release/agpeer /usr/local/bin/agpeer
 RUN mkdir -p /data /downloads \
     /opt/agpeer/downloads /opt/agpeer/soulseek-downloads /opt/agpeer/library \
     && chown -R nobody:nogroup /data /downloads /opt/agpeer
+
+# PUID/PGID entrypoint: starts as root, aligns ownership of writable volumes
+# with PUID/PGID (default 65534:65534 = nobody), then drops privileges via
+# gosu before exec'ing the binary. The agpeer process itself never runs as
+# root.
+COPY deploy/docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
 ENV AGPEER_HOST=0.0.0.0 \
     AGPEER_DATA_DIR=/data
@@ -43,6 +50,8 @@ VOLUME ["/data", "/opt/agpeer/downloads"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS -o /dev/null http://127.0.0.1:41000/ || exit 1
 
-USER nobody
-ENTRYPOINT ["agpeer"]
+# The entrypoint performs the privilege drop; do not override with `user:`
+# unless you accept running agpeer itself as that user.
+USER root
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["serve"]
