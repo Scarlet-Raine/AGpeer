@@ -166,6 +166,9 @@ and the [`Dockerfile`](Dockerfile).
 | `AGPEER_HOST` / `AGPEER_PORT` | Bind address for the HTTP server (default `127.0.0.1:41000`). |
 | `AGPEER_DATA_DIR` | Data directory (DB, token, logs). |
 | `AGPEER_SOULSEEK_SERVER_ADDR` / `AGPEER_SOULSEEK_LISTEN_PORT` / `AGPEER_SOULSEEK_USERNAME` / `AGPEER_SOULSEEK_PASSWORD` | Soulseek bootstrap. |
+| `AGPEER_TORRENT_LISTEN_PORT` | Inbound BitTorrent peer port. |
+| `AGPEER_TORRENT_DOWNLOAD_ROOT` / `AGPEER_SOULSEEK_DOWNLOAD_ROOT` / `AGPEER_POSTPROCESS_LIBRARY_ROOT` | Storage locations — with the toggles below, a container can run entirely from env, no config file. |
+| `AGPEER_TORRENT_ENABLED` / `AGPEER_TORRENT_ENGINE` / `AGPEER_SOULSEEK_ENABLED` / `AGPEER_HOOK_SEARCH_ENABLED` | Backend toggles (defaults are conservative; the container image enables them via compose). |
 | `AGPEER_LOG_FILE_FILTER` | File-log verbosity (default `debug`). |
 | `AGPEER_UI_TOKEN_INJECT` | `1` = embed the API token into the served page (container/LAN UI bootstrap; widening exposure — see [security.md](docs/security.md)). |
 

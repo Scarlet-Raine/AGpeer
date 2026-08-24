@@ -195,6 +195,13 @@ impl AppConfig {
     /// - `AGPEER_SOULSEEK_SERVER_ADDR` — Soulseek server address
     /// - `AGPEER_SOULSEEK_LISTEN_PORT` — local listen port for peer/file connections
     /// - `AGPEER_SOULSEEK_USERNAME`, `AGPEER_SOULSEEK_PASSWORD`
+    /// - `AGPEER_TORRENT_LISTEN_PORT` — inbound BitTorrent peer port
+    /// - `AGPEER_TORRENT_DOWNLOAD_ROOT`, `AGPEER_SOULSEEK_DOWNLOAD_ROOT`,
+    ///   `AGPEER_POSTPROCESS_LIBRARY_ROOT` — storage locations (container
+    ///   deployments can run entirely from env, no config file)
+    /// - `AGPEER_TORRENT_ENABLED`, `AGPEER_TORRENT_ENGINE`,
+    ///   `AGPEER_SOULSEEK_ENABLED`, `AGPEER_HOOK_SEARCH_ENABLED` — backend
+    ///   toggles (defaults are conservative; container images enable them)
     pub fn apply_env_overrides(&mut self) {
         self.apply_env_overrides_from(|key| std::env::var(key).ok());
     }
@@ -223,9 +230,49 @@ impl AppConfig {
                 self.soulseek.server_addr = addr;
             }
         }
+        if let Some(root) = get("AGPEER_TORRENT_DOWNLOAD_ROOT") {
+            if !root.trim().is_empty() {
+                self.torrent.download_root = root;
+            }
+        }
+        if let Some(root) = get("AGPEER_SOULSEEK_DOWNLOAD_ROOT") {
+            if !root.trim().is_empty() {
+                self.soulseek.download_root = root;
+            }
+        }
+        if let Some(root) = get("AGPEER_POSTPROCESS_LIBRARY_ROOT") {
+            if !root.trim().is_empty() {
+                self.postprocess.library_root = root;
+            }
+        }
+        if let Some(enabled) = get("AGPEER_TORRENT_ENABLED") {
+            if let Ok(enabled) = enabled.trim().parse() {
+                self.torrent.enabled = enabled;
+            }
+        }
+        if let Some(engine) = get("AGPEER_TORRENT_ENGINE") {
+            if !engine.trim().is_empty() {
+                self.torrent.engine = engine;
+            }
+        }
+        if let Some(enabled) = get("AGPEER_SOULSEEK_ENABLED") {
+            if let Ok(enabled) = enabled.trim().parse() {
+                self.soulseek.enabled = enabled;
+            }
+        }
+        if let Some(enabled) = get("AGPEER_HOOK_SEARCH_ENABLED") {
+            if let Ok(enabled) = enabled.trim().parse() {
+                self.hook_search.enabled = enabled;
+            }
+        }
         if let Some(port) = get("AGPEER_SOULSEEK_LISTEN_PORT") {
             if let Ok(port) = port.parse() {
                 self.soulseek.listen_port = port;
+            }
+        }
+        if let Some(port) = get("AGPEER_TORRENT_LISTEN_PORT") {
+            if let Ok(port) = port.parse() {
+                self.torrent.listen_port = Some(port);
             }
         }
         if let Some(username) = get("AGPEER_SOULSEEK_USERNAME") {
@@ -340,6 +387,53 @@ mod tests {
         assert_eq!(config.soulseek.listen_port, 4321);
         assert_eq!(config.soulseek.username.as_deref(), Some("alice"));
         assert_eq!(config.soulseek.password.as_deref(), Some("pw"));
+    }
+
+    #[test]
+    fn storage_root_env_overrides_apply() {
+        let mut config = AppConfig::default();
+        let overrides = [
+            ("AGPEER_TORRENT_DOWNLOAD_ROOT", "/opt/agpeer/downloads"),
+            (
+                "AGPEER_SOULSEEK_DOWNLOAD_ROOT",
+                "/opt/agpeer/soulseek-downloads",
+            ),
+            ("AGPEER_POSTPROCESS_LIBRARY_ROOT", "/opt/agpeer/library"),
+            ("AGPEER_TORRENT_LISTEN_PORT", "51234"),
+            ("AGPEER_TORRENT_ENABLED", "true"),
+            ("AGPEER_TORRENT_ENGINE", "rqbit"),
+            ("AGPEER_SOULSEEK_ENABLED", "true"),
+            ("AGPEER_HOOK_SEARCH_ENABLED", "true"),
+        ]
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+        config.apply_env_overrides_from(|key| overrides.get(key).map(|v| v.to_string()));
+
+        assert_eq!(config.torrent.download_root, "/opt/agpeer/downloads");
+        assert_eq!(
+            config.soulseek.download_root,
+            "/opt/agpeer/soulseek-downloads"
+        );
+        assert_eq!(config.postprocess.library_root, "/opt/agpeer/library");
+        assert_eq!(config.torrent.listen_port, Some(51234));
+        assert!(config.torrent.enabled);
+        assert_eq!(config.torrent.engine, "rqbit");
+        assert!(config.soulseek.enabled);
+        assert!(config.hook_search.enabled);
+    }
+
+    #[test]
+    fn storage_root_env_overrides_ignore_empty_values() {
+        let mut config = AppConfig::default();
+        let torrent_root = config.torrent.download_root.clone();
+        let torrent_enabled = config.torrent.enabled;
+        let overrides = std::collections::HashMap::from([
+            ("AGPEER_TORRENT_DOWNLOAD_ROOT", "  "),
+            ("AGPEER_TORRENT_ENABLED", "not-a-bool"),
+        ]);
+        config.apply_env_overrides_from(|key| overrides.get(key).map(|v| v.to_string()));
+        assert_eq!(config.torrent.download_root, torrent_root);
+        assert_eq!(config.torrent.enabled, torrent_enabled);
     }
 
     #[test]

@@ -1,20 +1,10 @@
 # agpeer Docker Compose example (one-binary container), Unraid layout.
 #
-# Uses absolute /mnt/user/appdata paths so it works from any location —
-# including the Compose Manager plugin, whose project dir lives on the flash
-# drive (/boot). Relative ./ paths would silently land there, which is both
-# permission-broken and the wrong place for a media library.
-#
-# One-time setup on Unraid (run BEFORE the first `compose up` — Docker
-# creates missing bind sources as directories, and a directory where the
-# config file should be breaks startup):
-#   mkdir -p /mnt/user/appdata/agpeer/downloads
-#   mkdir -p /mnt/user/appdata/agpeer/library
-#   mkdir -p /mnt/user/appdata/agpeer/soulseek-downloads
-#   curl -o /mnt/user/appdata/agpeer/config.toml \
-#     https://raw.githubusercontent.com/Scarlet-Raine/AGpeer/main/deploy/config.example.toml
-#   nano /mnt/user/appdata/agpeer/config.toml   # Soulseek credentials
-#   chmod 644 /mnt/user/appdata/agpeer/config.toml
+# Zero pre-setup: `docker compose up -d` is all it takes. There is no config
+# file to place — every deployment-relevant setting comes from the
+# environment below (fill in the two Soulseek credential lines first).
+# Docker creates the bind-mounted directories on first start and the image's
+# entrypoint aligns their ownership with PUID/PGID automatically.
 #
 # The WebUI + API are served from http://<host>:41000.
 
@@ -30,42 +20,52 @@ services:
       # behind a reverse proxy on the same host) use "127.0.0.1:41000:41000".
       - "41000:41000"
       # Torrent inbound peer port (needed for healthy swarms). Pick a free
-      # high port and keep it in sync with [torrent].listen_port in config.
+      # high port and keep it in sync with AGPEER_TORRENT_LISTEN_PORT below.
       - "51234:51234"
       # Soulseek peer/file connections (optional, needs no inbound).
       # - "2234:2234/tcp"
       # - "2234:2234/udp"
     environment:
-      # Bind inside the container; the 41000 host mapping above decides what
-      # is reachable from outside.
+      # Bind inside the container; the port mapping above decides what is
+      # reachable from outside.
       AGPEER_HOST: 0.0.0.0
       AGPEER_DATA_DIR: /data
-      AGPEER_CONFIG: /etc/agpeer.toml
+      # Soulseek credentials — the only lines you need to edit.
+      AGPEER_SOULSEEK_USERNAME: ""
+      AGPEER_SOULSEEK_PASSWORD: ""
       # Run the agpeer process as your user (Unraid defaults: 99/100). The
-      # entrypoint aligns ownership of /data and /opt/agpeer/* automatically —
-      # no manual chown needed. Omit these to use nobody (65534) instead.
+      # entrypoint aligns ownership of /data and /opt/agpeer/* automatically.
       PUID: 99
       PGID: 100
       # A browser outside the container cannot reach the loopback-only
       # /__agpeer_token bootstrap, so the token is injected into the served
       # page. WIDENING-EXPOSURE SETTING: any client that can reach port 41000
-      # can read the API token. Keep the port mapping private.
+      # can read the API token.
       AGPEER_UI_TOKEN_INJECT: "1"
-      # Soulseek credentials via env overrides (or via the mounted config):
-      # AGPEER_SOULSEEK_USERNAME: ""
-      # AGPEER_SOULSEEK_PASSWORD: ""
+      # Storage locations, matching the volume mounts below.
+      AGPEER_TORRENT_DOWNLOAD_ROOT: /opt/agpeer/downloads
+      AGPEER_SOULSEEK_DOWNLOAD_ROOT: /opt/agpeer/soulseek-downloads
+      AGPEER_POSTPROCESS_LIBRARY_ROOT: /opt/agpeer/library
+      # Backends (defaults are conservative without a config file).
+      AGPEER_TORRENT_ENABLED: "true"
+      AGPEER_TORRENT_ENGINE: rqbit
+      AGPEER_TORRENT_LISTEN_PORT: "51234"
+      AGPEER_SOULSEEK_ENABLED: "true"
+      AGPEER_HOOK_SEARCH_ENABLED: "true"
+      # Optional extras (defaults shown):
       # AGPEER_SOULSEEK_SERVER_ADDR: vps.slsknet.org:2242
+      # AGPEER_SOULSEEK_LISTEN_PORT: 2234
+      # AGPEER_LOG_FILE_FILTER: debug
+      # RUST_LOG: info
     command: serve
     volumes:
-      # The config only needs to be readable (chmod 644). Ownership of the
-      # writable dirs below is handled by the entrypoint via PUID/PGID.
-      - /mnt/user/appdata/agpeer/config.toml:/etc/agpeer.toml:ro
-      # Private app state (SQLite DB, API token, logs). A named volume gets
-      # correct ownership automatically — keep this one named.
+      # Private app state (SQLite DB, API token, rqbit DHT cache). A named
+      # volume gets correct ownership automatically — keep this one named.
       - agpeer_data:/data
       # Downloads and library must live on the SAME filesystem so completed
       # items organize via an instant rename instead of a cross-drive copy.
-      # Both under the same appdata share satisfies that.
+      # Both under the same appdata share satisfies that. The directories are
+      # created on first start; ownership is fixed by the entrypoint.
       - /mnt/user/appdata/agpeer/downloads:/opt/agpeer/downloads
       - /mnt/user/appdata/agpeer/library:/opt/agpeer/library
       # Soulseek downloads stage here before post-processing; a host path so
