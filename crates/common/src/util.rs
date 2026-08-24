@@ -1,4 +1,23 @@
-//! Shared URL/percent-decoding helpers.
+//! Shared URL/percent-decoding and path helpers.
+
+/// Platform-neutral "absolute path" check for user-supplied storage roots.
+///
+/// `std::path::Path::is_absolute` is platform-relative: `/mnt/user/media` is
+/// absolute on Linux but not on a Windows build host, and `E:\Media` is
+/// absolute on Windows only. agpeer's storage roots are interpreted by the
+/// machine running the core (often a Linux container), so accept either form
+/// regardless of the platform this binary was compiled on.
+pub fn is_absolute_path(text: &str) -> bool {
+    std::path::Path::new(text).is_absolute()
+        || text.starts_with('/')
+        || text.starts_with('\\')
+        || (text
+            .as_bytes()
+            .first()
+            .map(|b| b.is_ascii_alphabetic())
+            .unwrap_or(false)
+            && text.as_bytes().get(1) == Some(&b':'))
+}
 
 /// Percent-decode a magnet display name (`dn=`).
 ///
@@ -49,5 +68,16 @@ mod tests {
         // The same `dn=` renders identically here and in the torrent crate:
         // `+` always means a space.
         assert_eq!(percent_decode("Ubuntu+22.04"), "Ubuntu 22.04");
+    }
+
+    #[test]
+    fn absolute_path_accepts_posix_and_windows_forms() {
+        assert!(is_absolute_path("/mnt/user/media"));
+        assert!(is_absolute_path("E:\\Media"));
+        assert!(is_absolute_path("E:/Media"));
+        assert!(is_absolute_path("\\\\server\\share"));
+        assert!(!is_absolute_path("relative/path"));
+        assert!(!is_absolute_path("./here"));
+        assert!(!is_absolute_path(""));
     }
 }

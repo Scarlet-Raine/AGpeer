@@ -35,6 +35,46 @@ async fn hook_search_enabled(state: &Arc<AppState>) -> bool {
         .unwrap_or(state.config.hook_search.enabled)
 }
 
+/// Resolve a storage root setting at point of use: the runtime (DB-stored)
+/// value wins when present and absolute; otherwise fall back to the bootstrap
+/// config.
+async fn storage_root_setting(state: &Arc<AppState>, key: &str, fallback: &str) -> String {
+    SettingsStore::new(&state.db)
+        .get_typed::<String>(key)
+        .await
+        .ok()
+        .flatten()
+        .filter(|root| !root.trim().is_empty() && agpeer_common::is_absolute_path(root))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Validate that a settings payload's storage-root keys (if present) carry
+/// absolute, non-empty paths. Returns the invalid key on failure.
+fn validate_storage_root_values(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), Error> {
+    for key in [
+        "torrent.download_root",
+        "soulseek.download_root",
+        "postprocess.library_root",
+    ] {
+        if let Some(value) = map.get(key) {
+            let Some(text) = value.as_str() else {
+                return Err(Error::InvalidSetting(format!("{key}: expected a string")));
+            };
+            if text.trim().is_empty() {
+                return Err(Error::InvalidSetting(format!("{key}: must not be empty")));
+            }
+            if !agpeer_common::is_absolute_path(text) {
+                return Err(Error::InvalidSetting(format!(
+                    "{key}: must be an absolute path"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn status(
     State(state): State<Arc<AppState>>,
     _auth: BearerAuth,
@@ -112,8 +152,20 @@ pub async fn list_transfers(
 pub async fn add_transfer(
     State(state): State<Arc<AppState>>,
     _auth: BearerAuth,
-    Json(req): Json<AddTransferRequest>,
+    Json(mut req): Json<AddTransferRequest>,
 ) -> Result<(StatusCode, Json<AddTransferResponse>), ApiErrorResponse> {
+    // Default the destination to the runtime-configured torrent root so
+    // WebUI/API callers do not need to know where the server stores data.
+    if req.destination.is_none() {
+        req.destination = Some(
+            storage_root_setting(
+                &state,
+                "torrent.download_root",
+                &state.config.torrent.download_root,
+            )
+            .await,
+        );
+    }
     let backend = state
         .transfer_backend(req.backend)
         .ok_or_else(|| err_to_response(Error::BackendUnavailable))?;
@@ -480,7 +532,17 @@ pub async fn download_result(
         .find(|r| r.result_id == result_id && r.search_id == search_id)
         .ok_or_else(|| err_to_response(Error::ResultNotFound))?;
 
-    let destination = body.and_then(|b| b.0.destination);
+    let destination = match body.and_then(|b| b.0.destination) {
+        Some(destination) => Some(destination),
+        None => Some(
+            storage_root_setting(
+                &state,
+                "soulseek.download_root",
+                &state.config.soulseek.download_root,
+            )
+            .await,
+        ),
+    };
     let add_req = AddTransferRequest {
         backend: Backend::Soulseek,
         source: format!("soulseek:result:{}", result_id),
@@ -527,9 +589,17 @@ pub async fn put_settings(
     _auth: BearerAuth,
     Json(map): Json<serde_json::Map<String, serde_json::Value>>,
 ) -> Result<Json<serde_json::Value>, ApiErrorResponse> {
+    validate_storage_root_values(&map).map_err(err_to_response)?;
     let store = SettingsStore::new(&state.db);
+    let mut changed = Vec::new();
     for (key, value) in map {
         store.set(&key, &value).await.map_err(err_to_response)?;
+        changed.push(key);
+    }
+    if state.notify_settings_changed(&changed) {
+        state
+            .bus
+            .publish("backend.reloading", json!({"backend": "soulseek"}));
     }
     let all = store.all().await.map_err(err_to_response)?;
     Ok(Json(serde_json::Value::Object(all)))
@@ -554,10 +624,18 @@ pub async fn put_setting(
     Path(key): Path<String>,
     Json(value): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiErrorResponse> {
+    let mut map = serde_json::Map::new();
+    map.insert(key.clone(), value.clone());
+    validate_storage_root_values(&map).map_err(err_to_response)?;
     SettingsStore::new(&state.db)
         .set(&key, &value)
         .await
         .map_err(err_to_response)?;
+    if state.notify_settings_changed(&[key]) {
+        state
+            .bus
+            .publish("backend.reloading", json!({"backend": "soulseek"}));
+    }
     Ok(Json(value))
 }
 

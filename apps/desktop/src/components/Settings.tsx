@@ -15,6 +15,11 @@ export default function Settings() {
   const [dlRate, setDlRate] = useState("");
   const [ulRate, setUlRate] = useState("");
   const [maxActive, setMaxActive] = useState("");
+  const [slskUser, setSlskUser] = useState("");
+  const [slskPass, setSlskPass] = useState("");
+  const [torrentRoot, setTorrentRoot] = useState("");
+  const [slskRoot, setSlskRoot] = useState("");
+  const [libraryRoot, setLibraryRoot] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [newKey, setNewKey] = useState("");
@@ -159,6 +164,14 @@ export default function Settings() {
         setUlRate(Number.isFinite(b) ? String(Math.round(b / KiB)) : "");
       }
       if (ma != null) setMaxActive(num(ma));
+      const su = all["soulseek.username"];
+      if (su != null) setSlskUser(typeof su === "string" ? su : String(su));
+      const sr = all["torrent.download_root"];
+      if (sr != null) setTorrentRoot(typeof sr === "string" ? sr : String(sr));
+      const ssr = all["soulseek.download_root"];
+      if (ssr != null) setSlskRoot(typeof ssr === "string" ? ssr : String(ssr));
+      const lr = all["postprocess.library_root"];
+      if (lr != null) setLibraryRoot(typeof lr === "string" ? lr : String(lr));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -183,6 +196,63 @@ export default function Settings() {
       }
       await putSettings(map);
       setNotice("Queue settings saved. Torrent rate limits are applied on the next core start.");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onSaveSoulseek(e: FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const map: Record<string, unknown> = {};
+      if (slskUser.trim() !== "") map["soulseek.username"] = slskUser.trim();
+      if (slskPass.trim() !== "") map["soulseek.password"] = slskPass.trim();
+      if (Object.keys(map).length === 0) {
+        throw new Error("Enter a username (and password to change it)");
+      }
+      await putSettings(map);
+      setNotice("Soulseek account saved; the client is reconnecting.");
+      setSlskPass("");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onSaveStorage(e: FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const map: Record<string, unknown> = {};
+      for (const [key, value] of [
+        ["torrent.download_root", torrentRoot],
+        ["soulseek.download_root", slskRoot],
+        ["postprocess.library_root", libraryRoot],
+      ] as const) {
+        if (value.trim() !== "") {
+          if (!value.trim().startsWith("/") && !/^[A-Za-z]:[\\/]/.test(value.trim())) {
+            throw new Error(`${key}: must be an absolute path`);
+          }
+          map[key] = value.trim();
+        }
+      }
+      if (Object.keys(map).length === 0) {
+        throw new Error("Enter at least one path");
+      }
+      await putSettings(map);
+      setNotice(
+        "Storage locations saved. New downloads and organizing use them immediately.",
+      );
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -251,6 +321,85 @@ export default function Settings() {
           </button>
         </form>
         <p className="muted">Rate limits are bytes/sec on the server; they are read at core startup (librqbit applies them when the session is created).</p>
+      </div>
+
+      <div className="card">
+        <h3>Soulseek account</h3>
+        <form className="form-row" onSubmit={onSaveSoulseek}>
+          <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            Username
+            <input
+              value={slskUser}
+              onChange={(e) => setSlskUser(e.target.value)}
+              autoComplete="off"
+              style={{ width: 220 }}
+            />
+          </label>
+          <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            Password
+            <input
+              type="password"
+              value={slskPass}
+              onChange={(e) => setSlskPass(e.target.value)}
+              autoComplete="new-password"
+              placeholder="••••••••"
+              style={{ width: 220 }}
+            />
+          </label>
+          <button type="submit" className="btn" disabled={saving}>
+            {saving ? "Saving…" : "Save & reconnect"}
+          </button>
+        </form>
+        <p className="muted">
+          Saving reconnects the Soulseek client with the new credentials. Leave
+          the password blank to keep the current one. Values set here override
+          the bootstrap config/env.
+        </p>
+      </div>
+
+      <div className="card">
+        <h3>Storage locations</h3>
+        <form className="form-row" onSubmit={onSaveStorage}>
+          <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1 }}>
+            Torrent downloads root
+            <input
+              value={torrentRoot}
+              onChange={(e) => setTorrentRoot(e.target.value)}
+              placeholder="/mnt/user/appdata/agpeer/downloads"
+              autoComplete="off"
+              style={{ width: "100%" }}
+            />
+          </label>
+          <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1 }}>
+            Soulseek downloads root
+            <input
+              value={slskRoot}
+              onChange={(e) => setSlskRoot(e.target.value)}
+              placeholder="/mnt/user/appdata/agpeer/soulseek-downloads"
+              autoComplete="off"
+              style={{ width: "100%" }}
+            />
+          </label>
+          <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1 }}>
+            Library root (organized media)
+            <input
+              value={libraryRoot}
+              onChange={(e) => setLibraryRoot(e.target.value)}
+              placeholder="/mnt/user/media"
+              autoComplete="off"
+              style={{ width: "100%" }}
+            />
+          </label>
+          <button type="submit" className="btn" disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </form>
+        <p className="muted">
+          Absolute paths as seen by the agpeer server (inside its container or
+          host). New downloads use them immediately; the library root is where
+          completed downloads are organized. Changing the Soulseek root also
+          reconnects the client.
+        </p>
       </div>
 
       <div className="card">

@@ -18,6 +18,38 @@ use tracing_subscriber::{EnvFilter, Layer};
 const LOG_LINES_PER_FILE: usize = 2_000;
 const LOG_FILE_RETENTION: usize = 20;
 
+/// Merge runtime (DB-stored) `soulseek.*` settings over the bootstrap
+/// Soulseek config. Used by the connect supervisor so credential and
+/// location edits from the WebUI take effect on reconnect.
+async fn effective_soulseek_config(
+    base: &agpeer_core::config::SoulseekConfig,
+    store: &agpeer_storage::SettingsStore<'_>,
+) -> agpeer_core::config::SoulseekConfig {
+    let mut cfg = base.clone();
+    if let Ok(Some(value)) = store.get_typed::<String>("soulseek.username").await {
+        if !value.trim().is_empty() {
+            cfg.username = Some(value);
+        }
+    }
+    if let Ok(Some(value)) = store.get_typed::<String>("soulseek.password").await {
+        cfg.password = Some(value);
+    }
+    if let Ok(Some(value)) = store.get_typed::<String>("soulseek.server_addr").await {
+        if !value.trim().is_empty() {
+            cfg.server_addr = value;
+        }
+    }
+    if let Ok(Some(value)) = store.get_typed::<u16>("soulseek.listen_port").await {
+        cfg.listen_port = value;
+    }
+    if let Ok(Some(value)) = store.get_typed::<String>("soulseek.download_root").await {
+        if !value.trim().is_empty() && agpeer_common::is_absolute_path(&value) {
+            cfg.download_root = value;
+        }
+    }
+    cfg
+}
+
 /// Append-only log writer that rotates after a fixed number of newline-delimited
 /// records. Retention includes the active file: `agpeer.log` plus
 /// `agpeer.log.1` through `agpeer.log.19`.
@@ -219,7 +251,7 @@ async fn run_migrate(config_override: Option<PathBuf>) -> Result<(), String> {
 }
 
 async fn run_serve(config_override: Option<PathBuf>) -> Result<(), String> {
-    let config = match config_override {
+    let mut config = match config_override {
         Some(path) => AppConfig::from_file(&path).map_err(|e| e.to_string())?,
         None => AppConfig::load().map_err(|e| e.to_string())?,
     };
@@ -278,6 +310,18 @@ async fn run_serve(config_override: Option<PathBuf>) -> Result<(), String> {
 
     let state = AppState::new(config.clone(), db, token);
 
+    // Runtime (DB-stored) settings win over bootstrap env/config defaults for
+    // Soulseek connection details and storage roots. Applied before backends
+    // are constructed; the Soulseek supervisor below also re-reads them on
+    // every reconnect.
+    match config.apply_settings_overrides_from(|key| settings.get(key).cloned()) {
+        Ok(keys) if !keys.is_empty() => {
+            tracing::info!("runtime settings applied at startup: {}", keys.join(", "));
+        }
+        Err(e) => tracing::warn!("ignoring invalid runtime settings: {e}"),
+        _ => {}
+    }
+
     if config.torrent.enabled {
         let tcfg = agpeer_torrent::TorrentConfig {
             download_root: config.torrent.download_root.clone(),
@@ -327,39 +371,60 @@ async fn run_serve(config_override: Option<PathBuf>) -> Result<(), String> {
     }
 
     if config.soulseek.enabled {
-        match config.soulseek.username.as_deref() {
-            Some(username) if !username.is_empty() => {
-                let native_config = agpeer_soulseek::NativeConfig {
-                    server_addr: config.soulseek.server_addr.clone(),
-                    username: username.to_string(),
-                    password: config.soulseek.password.clone().unwrap_or_default(),
-                    listen_port: config.soulseek.listen_port,
-                    download_dir: config.soulseek.download_root.clone(),
-                    ..agpeer_soulseek::NativeConfig::default()
-                };
-                match agpeer_soulseek::NativeSoulseekBackend::connect(native_config).await {
-                    Ok(backend) => {
-                        let backend = Arc::new(backend);
-                        state.register_transfer_backend(Backend::Soulseek, backend.clone());
-                        state.register_search_backend(Backend::Soulseek, backend);
-                        tracing::info!("soulseek backend registered (native client)");
+        // Supervisor: (re)connects the native client whenever a
+        // soulseek.* runtime setting changes, so credentials and staging
+        // location are editable from the WebUI without a restart. The old
+        // registration stays until a successful reconnect replaces it.
+        let soulseek_base = config.soulseek.clone();
+        let state2 = state.clone();
+        let mut reload = state.subscribe_backend_reload();
+        tokio::spawn(async move {
+            let store = agpeer_storage::SettingsStore::new(&state2.db);
+            loop {
+                let effective = effective_soulseek_config(&soulseek_base, &store).await;
+                let username = effective
+                    .username
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|u| !u.is_empty())
+                    .map(str::to_string);
+                if let Some(username) = username {
+                    let native_config = agpeer_soulseek::NativeConfig {
+                        server_addr: effective.server_addr.clone(),
+                        username,
+                        password: effective.password.clone().unwrap_or_default(),
+                        listen_port: effective.listen_port,
+                        download_dir: effective.download_root.clone(),
+                        ..agpeer_soulseek::NativeConfig::default()
+                    };
+                    match agpeer_soulseek::NativeSoulseekBackend::connect(native_config).await {
+                        Ok(backend) => {
+                            let backend = Arc::new(backend);
+                            state2.register_transfer_backend(Backend::Soulseek, backend.clone());
+                            state2.register_search_backend(Backend::Soulseek, backend);
+                            tracing::info!("soulseek backend registered (native client)");
+                        }
+                        Err(e) => {
+                            tracing::warn!("native soulseek backend failed to connect: {e}");
+                            state2.bus.publish(
+                                "backend.degraded",
+                                serde_json::json!({"backend": "soulseek", "error": e.to_string()}),
+                            );
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!("native soulseek backend failed to connect: {e}");
-                        state.bus.publish(
-                            "backend.degraded",
-                            serde_json::json!({"backend": "soulseek", "error": e.to_string()}),
-                        );
-                    }
+                } else {
+                    tracing::info!(
+                        "soulseek enabled but no soulseek.username configured yet; \
+                         set it in the WebUI settings or config"
+                    );
                 }
+                if reload.changed().await.is_err() {
+                    break; // state dropped (shutdown)
+                }
+                let _ = *reload.borrow_and_update();
+                tracing::info!("soulseek settings changed; reconnecting");
             }
-            _ => {
-                tracing::warn!(
-                    "soulseek enabled but no soulseek.username configured; native backend \
-                     unavailable"
-                );
-            }
-        }
+        });
     } else {
         tracing::warn!("soulseek backend disabled");
     }

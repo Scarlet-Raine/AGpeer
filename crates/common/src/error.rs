@@ -97,6 +97,11 @@ pub enum Error {
     #[error("invalid state: {0}")]
     InvalidState(String),
 
+    /// A runtime setting value failed validation (e.g. a storage root that
+    /// is not an absolute path).
+    #[error("invalid setting: {0}")]
+    InvalidSetting(String),
+
     /// An opaque id could not be parsed (e.g. malformed UUID text).
     #[error("invalid id: {0}")]
     InvalidId(#[from] uuid::Error),
@@ -137,6 +142,7 @@ impl Error {
             Error::ProcessLaunchDenied => "ProcessLaunchDenied",
             Error::SidecarVersionUnsupported => "SidecarVersionUnsupported",
             Error::InvalidState(_) => "InvalidState",
+            Error::InvalidSetting(_) => "InvalidSetting",
             Error::InvalidId(_) => "InvalidId",
             Error::InvalidTimestamp(_) => "InvalidTimestamp",
             Error::Database(_) => "Database",
@@ -171,6 +177,7 @@ mod tests {
         assert_eq!(Error::TransferNotFound.code(), "TransferNotFound");
         assert_eq!(Error::ProcessLaunchDenied.code(), "ProcessLaunchDenied");
         assert_eq!(Error::InvalidState("x".into()).code(), "InvalidState");
+        assert_eq!(Error::InvalidSetting("x".into()).code(), "InvalidSetting");
         assert_eq!(Error::Database("x".into()).code(), "Database");
     }
 

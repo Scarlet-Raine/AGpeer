@@ -12,7 +12,7 @@ use std::sync::Arc;
 use agpeer_common::{Error, Transfer, TransferId};
 use agpeer_jobs::{Job, JobState, Step, StepKind, StepState};
 use agpeer_postprocess::{MediaHint, OrganizeHints, Organizer};
-use agpeer_storage::JobStore;
+use agpeer_storage::{JobStore, SettingsStore};
 use chrono::Utc;
 use serde_json::json;
 use uuid::Uuid;
@@ -25,10 +25,22 @@ pub fn auto_organize_enabled(state: &AppState) -> bool {
         && !state.config.postprocess.library_root.trim().is_empty()
 }
 
+/// Effective library root: the runtime (DB-stored) `postprocess.library_root`
+/// setting wins when present and absolute; otherwise the bootstrap config.
+async fn library_root(state: &AppState) -> String {
+    SettingsStore::new(&state.db)
+        .get_typed::<String>("postprocess.library_root")
+        .await
+        .ok()
+        .flatten()
+        .filter(|root| !root.trim().is_empty() && agpeer_common::is_absolute_path(root))
+        .unwrap_or_else(|| state.config.postprocess.library_root.clone())
+}
+
 /// Build an organizer for the configured library root, honoring folder-name
 /// overrides from `[postprocess]` (`tv_dir`, `movies_dir`, `anime_dir`).
-fn organizer(state: &AppState) -> Organizer {
-    let mut organizer = Organizer::new(PathBuf::from(&state.config.postprocess.library_root));
+async fn organizer(state: &AppState) -> Organizer {
+    let mut organizer = Organizer::new(PathBuf::from(library_root(state).await));
     if let Some(dir) = state.config.postprocess.tv_dir.as_deref() {
         organizer = organizer.with_tv_folder(dir);
     }
@@ -106,7 +118,7 @@ pub async fn organize_completed_transfer(
     state: &Arc<AppState>,
     transfer: &Transfer,
 ) -> Result<(), Error> {
-    let organizer = organizer(state);
+    let organizer = organizer(state).await;
     let hints = hints_from_metadata(&transfer.metadata);
 
     let steps = vec![

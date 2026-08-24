@@ -80,6 +80,7 @@ pub fn err_to_response(e: agpeer_common::Error) -> ApiErrorResponse {
             StatusCode::FORBIDDEN
         }
         agpeer_common::Error::InvalidState(_) => StatusCode::CONFLICT,
+        agpeer_common::Error::InvalidSetting(_) => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     ApiErrorResponse(status, e.into_api())

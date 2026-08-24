@@ -20,4 +20,4 @@ pub use transfer::{
     AddTransferRequest, AddTransferResponse, Backend, DownloadResultRequest, FileSelection,
     PostprocessState, Transfer, TransferFile, TransferState,
 };
-pub use util::percent_decode;
+pub use util::{is_absolute_path, percent_decode};

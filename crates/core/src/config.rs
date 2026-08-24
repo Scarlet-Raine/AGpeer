@@ -169,6 +169,8 @@ pub enum ConfigError {
     Io(String),
     #[error("config parse error: {0}")]
     Toml(String),
+    #[error("config value error: {0}")]
+    Invalid(String),
 }
 
 pub fn default_config_path() -> PathBuf {
@@ -320,6 +322,62 @@ impl AppConfig {
     pub fn token_file(&self) -> PathBuf {
         Path::new(&self.data_dir).join("token")
     }
+
+    /// Apply runtime (DB-stored) settings overrides on top of the bootstrap
+    /// config. Called at startup before backends are constructed; explicit
+    /// user intent in the settings store wins over env/config defaults.
+    ///
+    /// Recognized keys (all optional):
+    /// - `soulseek.username`, `soulseek.password`
+    /// - `torrent.download_root`, `soulseek.download_root`,
+    ///   `postprocess.library_root` (must be absolute paths)
+    ///
+    /// Returns the list of recognized keys that were applied, so callers can
+    /// report or react (e.g. trigger a Soulseek reconnect).
+    pub fn apply_settings_overrides_from(
+        &mut self,
+        get: impl Fn(&str) -> Option<serde_json::Value>,
+    ) -> Result<Vec<String>, ConfigError> {
+        let mut applied = Vec::new();
+        let invalid =
+            |key: &str, why: &str| -> ConfigError { ConfigError::Invalid(format!("{key}: {why}")) };
+        for key in ["soulseek.username", "soulseek.password"] {
+            if let Some(value) = get(key) {
+                let Some(text) = value.as_str() else {
+                    return Err(invalid(key, "expected a string"));
+                };
+                if key == "soulseek.username" {
+                    self.soulseek.username = Some(text.to_string());
+                } else {
+                    self.soulseek.password = Some(text.to_string());
+                }
+                applied.push(key.to_string());
+            }
+        }
+        for (key, target) in [
+            ("torrent.download_root", &mut self.torrent.download_root),
+            ("soulseek.download_root", &mut self.soulseek.download_root),
+            (
+                "postprocess.library_root",
+                &mut self.postprocess.library_root,
+            ),
+        ] {
+            if let Some(value) = get(key) {
+                let Some(text) = value.as_str() else {
+                    return Err(invalid(key, "expected a string"));
+                };
+                if text.trim().is_empty() {
+                    return Err(invalid(key, "must not be empty"));
+                }
+                if !agpeer_common::is_absolute_path(text) {
+                    return Err(invalid(key, "must be an absolute path"));
+                }
+                *target = text.to_string();
+                applied.push(key.to_string());
+            }
+        }
+        Ok(applied)
+    }
 }
 
 #[cfg(test)]
@@ -444,6 +502,72 @@ mod tests {
             std::collections::HashMap::from([("AGPEER_SOULSEEK_LISTEN_PORT", "not-a-port")]);
         config.apply_env_overrides_from(|key| overrides.get(key).map(|v| v.to_string()));
         assert_eq!(config.soulseek.listen_port, port);
+    }
+
+    #[test]
+    fn settings_overrides_apply() {
+        let mut config = AppConfig::default();
+        let settings = std::collections::HashMap::from([
+            ("soulseek.username".to_string(), serde_json::json!("alice")),
+            ("soulseek.password".to_string(), serde_json::json!("secret")),
+            (
+                "torrent.download_root".to_string(),
+                serde_json::json!("/mnt/user/dl"),
+            ),
+            (
+                "postprocess.library_root".to_string(),
+                serde_json::json!("/mnt/user/media"),
+            ),
+        ]);
+        let applied = config
+            .apply_settings_overrides_from(|key| settings.get(key).cloned())
+            .unwrap();
+        assert_eq!(config.soulseek.username.as_deref(), Some("alice"));
+        assert_eq!(config.soulseek.password.as_deref(), Some("secret"));
+        assert_eq!(config.torrent.download_root, "/mnt/user/dl");
+        assert_eq!(config.postprocess.library_root, "/mnt/user/media");
+        assert_eq!(applied.len(), 4);
+    }
+
+    #[test]
+    fn settings_overrides_reject_relative_roots() {
+        let mut config = AppConfig::default();
+        let settings = std::collections::HashMap::from([(
+            "postprocess.library_root".to_string(),
+            serde_json::json!("relative/path"),
+        )]);
+        assert!(config
+            .apply_settings_overrides_from(|key| settings.get(key).cloned())
+            .is_err());
+        assert_eq!(
+            config.postprocess.library_root,
+            AppConfig::default().postprocess.library_root
+        );
+    }
+
+    #[test]
+    fn settings_overrides_reject_non_string_values() {
+        let mut config = AppConfig::default();
+        let settings = std::collections::HashMap::from([(
+            "soulseek.username".to_string(),
+            serde_json::json!(42),
+        )]);
+        assert!(config
+            .apply_settings_overrides_from(|key| settings.get(key).cloned())
+            .is_err());
+    }
+
+    #[test]
+    fn settings_overrides_ignore_unknown_keys() {
+        let mut config = AppConfig::default();
+        let settings = std::collections::HashMap::from([(
+            "hook_search.enabled".to_string(),
+            serde_json::json!(true),
+        )]);
+        let applied = config
+            .apply_settings_overrides_from(|key| settings.get(key).cloned())
+            .unwrap();
+        assert!(applied.is_empty());
     }
 
     #[test]

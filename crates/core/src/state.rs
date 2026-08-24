@@ -8,6 +8,17 @@ use chrono::{DateTime, Utc};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use tokio::sync::watch;
+
+/// Settings keys whose change requires the Soulseek backend to reconnect
+/// (credentials, server address, or staging location).
+pub const SOULSEEK_RELOAD_KEYS: &[&str] = &[
+    "soulseek.username",
+    "soulseek.password",
+    "soulseek.server_addr",
+    "soulseek.listen_port",
+    "soulseek.download_root",
+];
 
 /// Application-wide shared state handed to every component.
 pub struct AppState {
@@ -16,21 +27,43 @@ pub struct AppState {
     pub bus: EventBus,
     pub api_token: Arc<String>,
     pub started_at: DateTime<Utc>,
+    /// Generation counter bumped whenever a backend-relevant setting changes;
+    /// the Soulseek supervisor reconnects when it advances.
+    backend_reload: watch::Sender<u64>,
     transfer_backends: RwLock<HashMap<Backend, Arc<dyn TransferBackend>>>,
     search_backends: RwLock<HashMap<Backend, Arc<dyn SearchBackend>>>,
 }
 
 impl AppState {
     pub fn new(config: AppConfig, db: Database, api_token: String) -> Arc<Self> {
+        let (backend_reload, _) = watch::channel(0u64);
         Arc::new(Self {
             config: Arc::new(config),
             db,
             bus: EventBus::new(),
             api_token: Arc::new(api_token),
             started_at: Utc::now(),
+            backend_reload,
             transfer_backends: RwLock::new(HashMap::new()),
             search_backends: RwLock::new(HashMap::new()),
         })
+    }
+
+    /// Subscribe to backend-reload generation changes.
+    pub fn subscribe_backend_reload(&self) -> watch::Receiver<u64> {
+        self.backend_reload.subscribe()
+    }
+
+    /// Bump the backend-reload generation if any of `changed_keys` requires
+    /// it. Returns whether a reload was signaled.
+    pub fn notify_settings_changed(&self, changed_keys: &[String]) -> bool {
+        let needs_reload = changed_keys
+            .iter()
+            .any(|key| SOULSEEK_RELOAD_KEYS.contains(&key.as_str()));
+        if needs_reload {
+            self.backend_reload.send_modify(|gen| *gen += 1);
+        }
+        needs_reload
     }
 
     /// Register a transfer backend and publish its readiness.
