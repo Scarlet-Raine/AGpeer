@@ -5,11 +5,15 @@
 # drive (/boot). Relative ./ paths would silently land there, which is both
 # permission-broken and the wrong place for a media library.
 #
-# One-time setup on Unraid:
+# One-time setup on Unraid (run BEFORE the first `compose up` — Docker
+# creates missing bind sources as directories, and a directory where the
+# config file should be breaks startup):
 #   mkdir -p /mnt/user/appdata/agpeer/downloads
 #   mkdir -p /mnt/user/appdata/agpeer/library
-#   cp deploy/config.example.toml /mnt/user/appdata/agpeer/config.toml
-#   # fill in Soulseek credentials, then:
+#   mkdir -p /mnt/user/appdata/agpeer/soulseek-downloads
+#   curl -o /mnt/user/appdata/agpeer/config.toml \
+#     https://raw.githubusercontent.com/Scarlet-Raine/AGpeer/main/deploy/config.example.toml
+#   nano /mnt/user/appdata/agpeer/config.toml   # Soulseek credentials
 #   chmod 644 /mnt/user/appdata/agpeer/config.toml
 #
 # The WebUI + API are served from http://<host>:41000.
@@ -20,11 +24,11 @@ services:
     container_name: agpeer
     restart: unless-stopped
     ports:
-      # WebUI + REST API. 127.0.0.1 = reachable only from the Unraid box
-      # itself. For LAN access use your host IP (e.g. 192.168.1.13:41000:41000)
-      # or a reverse proxy — anything that can reach this port can read the
-      # API bearer token.
-      - "127.0.0.1:41000:41000"
+      # WebUI + REST API, reachable from your LAN. WIDENING-EXPOSURE: the
+      # WebUI serves the API token to any client that can reach this port
+      # (see AGPEER_UI_TOKEN_INJECT below). For loopback-only access (e.g.
+      # behind a reverse proxy on the same host) use "127.0.0.1:41000:41000".
+      - "41000:41000"
       # Torrent inbound peer port (needed for healthy swarms). Pick a free
       # high port and keep it in sync with [torrent].listen_port in config.
       - "51234:51234"
