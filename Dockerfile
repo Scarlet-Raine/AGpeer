@@ -40,7 +40,11 @@ COPY deploy/docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
 ENV AGPEER_HOST=0.0.0.0 \
-    AGPEER_DATA_DIR=/data
+    AGPEER_DATA_DIR=/data \
+    # The runtime user's home is deliberately /nonexistent; point HOME at
+    # the writable data volume so tools that use $HOME (rqbit DHT cache)
+    # work and persist across restarts.
+    HOME=/data
 
 EXPOSE 41000
 VOLUME ["/data", "/opt/agpeer/downloads"]

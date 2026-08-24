@@ -20,8 +20,10 @@ services:
     container_name: agpeer
     restart: unless-stopped
     ports:
-      # WebUI + REST API (bind to a private interface / firewall this port;
-      # it carries the API bearer token).
+      # WebUI + REST API. 127.0.0.1 = reachable only from the Unraid box
+      # itself. For LAN access use your host IP (e.g. 192.168.1.13:41000:41000)
+      # or a reverse proxy — anything that can reach this port can read the
+      # API bearer token.
       - "127.0.0.1:41000:41000"
       # Torrent inbound peer port (needed for healthy swarms). Pick a free
       # high port and keep it in sync with [torrent].listen_port in config.
