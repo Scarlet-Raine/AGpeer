@@ -10,7 +10,7 @@
 //!   run per query with `{query}`/`{domains}` substitution. The script may emit
 //!   a JSON array of hits or one magnet per line.
 
-use crate::builtin::{generic_search, percent_decode, search_site, SearchHit};
+use crate::builtin::{generic_search, magnet_key, percent_decode, search_site, SearchHit};
 use agpeer_common::{
     Backend, Error, HookSearchSite, Result, ResultId, SearchBackend, SearchId, SearchRequest,
     SearchResult,
@@ -116,8 +116,12 @@ impl HookSearchBackend {
         let sites = self.sites().await;
         let budget = self.budget(request);
 
-        let mut hits = generic_search(&self.client, &request.query, &domains, budget).await?;
-        let mut seen: HashSet<String> = hits.iter().map(|h| h.magnet.clone()).collect();
+        // User-configured site templates run first and own the top of the
+        // result list; the generic engine pass only fills the remaining
+        // budget. `seen` holds `magnet_key` identities so the same torrent
+        // surfacing from a site page and an engine SERP collapses to one hit.
+        let mut hits: Vec<SearchHit> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
 
         for site in sites {
             // Stop fetching site templates once the result budget is already
@@ -132,7 +136,7 @@ impl HookSearchBackend {
             match search_site(&self.client, &site, &request.query).await {
                 Ok(mut page_hits) => {
                     for hit in page_hits.drain(..) {
-                        if seen.insert(hit.magnet.clone()) {
+                        if seen.insert(magnet_key(&hit.magnet)) {
                             hits.push(hit);
                             if hits.len() >= budget {
                                 break;
@@ -146,6 +150,17 @@ impl HookSearchBackend {
                         error = %e,
                         "built-in search: site template failed"
                     );
+                }
+            }
+        }
+
+        if hits.len() < budget {
+            for hit in generic_search(&self.client, &request.query, &domains, budget).await? {
+                if seen.insert(magnet_key(&hit.magnet)) {
+                    hits.push(hit);
+                    if hits.len() >= budget {
+                        break;
+                    }
                 }
             }
         }

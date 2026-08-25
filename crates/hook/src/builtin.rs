@@ -65,6 +65,21 @@ fn magnet_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(MAGNET_PATTERN).expect("magnet regex is valid"))
 }
 
+/// Deduplication identity for a magnet URI: the lowercased `btih:` info hash,
+/// or the whole URI when no hash is present. Two magnets for the same torrent
+/// that differ only in trailing parameters (or hash case) collapse to one hit.
+pub(crate) fn magnet_key(magnet: &str) -> String {
+    if let Some(pos) = magnet.find("btih:") {
+        let rest = &magnet[pos + 5..];
+        let end = rest.find('&').unwrap_or(rest.len());
+        let hash = &rest[..end];
+        if !hash.is_empty() {
+            return hash.to_ascii_lowercase();
+        }
+    }
+    magnet.to_string()
+}
+
 /// Percent-decode for the built-in search. Shares semantics with the torrent
 /// crate (and with `SearchHit` display names) via the single implementation in
 /// `agpeer_common` — a literal `+` decodes to a space.
@@ -186,7 +201,7 @@ pub async fn search_site(
                 ))
             })?;
             for magnet in extract_regex(&page, &pattern)? {
-                if seen.insert(magnet.clone()) {
+                if seen.insert(magnet_key(&magnet)) {
                     out.push(SearchHit::new(magnet, None));
                 }
             }
@@ -215,7 +230,7 @@ async fn detail_hits(
         };
         if let Some(first) = magnet_re().find(&detail) {
             let magnet = first.as_str().to_string();
-            if seen.insert(magnet.clone()) {
+            if seen.insert(magnet_key(&magnet)) {
                 out.push(SearchHit::new(
                     magnet,
                     (!text.trim().is_empty()).then_some(text.trim().to_string()),
@@ -297,11 +312,12 @@ fn extract_regex(html: &str, pattern: &str) -> Result<Vec<String>> {
 
 /// Collect magnet hits from a page: direct `<a href="magnet:...">` anchors
 /// (with link text as the title), `uddg=`-wrapped redirect targets (DuckDuckGo
-/// html/lite), and any bare `magnet:` tokens in the raw page.
+/// html/lite), and any bare `magnet:` tokens in the raw page. `seen` holds
+/// [`magnet_key`] identities.
 fn note_hits(html: &str, seen: &mut HashSet<String>, out: &mut Vec<SearchHit>) {
     for anchor in scan_anchors(html) {
         if let Some(magnet) = resolved_magnet(&anchor.href) {
-            if seen.insert(magnet.clone()) {
+            if seen.insert(magnet_key(&magnet)) {
                 let title = if anchor.text.trim().is_empty() {
                     None
                 } else {
@@ -312,7 +328,7 @@ fn note_hits(html: &str, seen: &mut HashSet<String>, out: &mut Vec<SearchHit>) {
         }
     }
     for magnet in raw_magnets(html) {
-        if seen.insert(magnet.clone()) {
+        if seen.insert(magnet_key(&magnet)) {
             out.push(SearchHit::new(magnet, None));
         }
     }
@@ -472,6 +488,7 @@ mod tests {
 
     const MAGNET_A: &str = "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const MAGNET_B: &str = "magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const MAGNET_A_HASH_UPPER: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     #[test]
     fn raw_magnet_scan_finds_tokens_in_attributes_and_text() {
@@ -590,6 +607,22 @@ mod tests {
     fn scan_anchors_unescapes_entities() {
         let anchors = scan_anchors("<a href=\"/x\">a &amp; b</a>");
         assert_eq!(anchors[0].text, "a & b");
+    }
+
+    #[test]
+    fn dedupe_collapses_same_hash_with_different_params_or_case() {
+        let upper = format!("magnet:?xt=urn:btih:{}", MAGNET_A_HASH_UPPER);
+        let html = format!(
+            "<a href=\"{MAGNET_A}&dn=One\">one</a><a href=\"{upper}\">two</a><a href=\"{MAGNET_B}\">three</a>"
+        );
+        let hits = generic_extract(&html);
+        assert_eq!(hits.len(), 2);
+    }
+
+    #[test]
+    fn magnet_key_extracts_lowercased_btih() {
+        assert_eq!(magnet_key("magnet:?xt=urn:btih:ABCDEF&dn=x"), "abcdef");
+        assert_eq!(magnet_key(MAGNET_A), "a".repeat(40));
     }
 
     fn generic_extract(html: &str) -> Vec<SearchHit> {
