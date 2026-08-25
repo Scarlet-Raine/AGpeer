@@ -113,6 +113,17 @@ fn html_unescape(s: &str) -> String {
         .replace("&#x27;", "'")
 }
 
+/// Remove raw HTML tags from an anchor's inner text so icon-only anchors
+/// (e.g. `<i class="fa fa-fw fa-magnet"></i>`) yield an empty string instead
+/// of leaking markup into result titles.
+fn strip_tags(s: &str) -> String {
+    static TAG_RE: OnceLock<Regex> = OnceLock::new();
+    TAG_RE
+        .get_or_init(|| Regex::new(r"<[^>]*>").expect("tag regex is valid"))
+        .replace_all(s, "")
+        .into_owned()
+}
+
 /// Run a generic engine search for `query`, scoped to the user-configured
 /// `domains` via `site:` filters. Returns hits with titles when the engine
 /// exposes them.
@@ -399,13 +410,13 @@ fn scan_anchors(html: &str) -> Vec<Anchor> {
                 let text_start = i + rel + 1;
                 let rest = &bytes[text_start..];
                 if let Some(end) = rest.windows(4).position(|w| w == b"</a>") {
-                    let text = html[text_start..text_start + end]
+                    let text = html_unescape(&strip_tags(&html[text_start..text_start + end]))
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" ");
                     out.push(Anchor {
                         href: html_unescape(&href),
-                        text: html_unescape(&text),
+                        text,
                     });
                     i = text_start + end + 4;
                     continue;
@@ -623,6 +634,24 @@ mod tests {
     fn magnet_key_extracts_lowercased_btih() {
         assert_eq!(magnet_key("magnet:?xt=urn:btih:ABCDEF&dn=x"), "abcdef");
         assert_eq!(magnet_key(MAGNET_A), "a".repeat(40));
+    }
+
+    #[test]
+    fn anchor_icon_markup_does_not_become_title() {
+        let html = format!(
+            "<a href=\"{MAGNET_A}&dn=The%20Real%20Name\"><i class=\"fa fa-fw fa-magnet\"></i></a>"
+        );
+        let hits = generic_extract(&html);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, None);
+        assert_eq!(hits[0].magnet, format!("{MAGNET_A}&dn=The%20Real%20Name"));
+    }
+
+    #[test]
+    fn anchor_text_with_inline_markup_keeps_words() {
+        let html = "<a href=\"/x\"><b>My</b> &amp; <i>File</i></a>";
+        let anchors = scan_anchors(html);
+        assert_eq!(anchors[0].text, "My & File");
     }
 
     fn generic_extract(html: &str) -> Vec<SearchHit> {
